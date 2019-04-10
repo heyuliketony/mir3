@@ -1,236 +1,409 @@
 #include "stdafx.h"
+#include "dbsvr.h"
+#include "globalUserList.h"
+#include "../def/dbmgr.h"
+#include <stdio.h>
+#include "tableList.h"
+#include "processdbmsg.h"
 
-void UpdateStatusBarUsers(BOOL fGrow);
+void GetLoadHumanRcd(CServerInfo* pServerInfo, _LPTLOADHUMAN lpLoadHuman, int nRecog);
 
-CGateInfo::CGateInfo()
+extern CWHList<CServerInfo*>		g_xServerList;
+extern CWHList< GAMESERVERINFO * >	g_xGameServerList;
+
+void CGateInfo::ReceiveOpenUser(char *pszPacket)
 {
-	m_fDoSending = FALSE;
-	
-	memset( &OverlappedEx, 0, sizeof( OverlappedEx ) );
-}
+	char	*pszPos;
+	int		nSocket;
+	int		nLen = memlen(pszPacket);
 
-void CGateInfo::SendGateCheck()
-{
-	_LPTSENDBUFF lpSendBuff = new _TSENDBUFF;
-
-	if (lpSendBuff)
+	if (pszPos = (char *)memchr(pszPacket, '/', nLen))
 	{
-		_TMSGHEADER		MsgHdr;
+		nSocket = AnsiStrToVal(pszPacket);
 
-		MsgHdr.nCode			= 0xAA55AA55;
-		MsgHdr.nSocket			= 0;
-		MsgHdr.wUserGateIndex	= 0;
-		MsgHdr.wIdent			= GM_CHECKSERVER;
-		MsgHdr.wUserListIndex	= 0;
-		MsgHdr.wTemp			= 0;
-		MsgHdr.nLength			= 0;
+		pszPos++;
 
-		lpSendBuff->nLen = sizeof(_TMSGHEADER);
+		CUserInfo* pUserInfo = new CUserInfo;
 
-		memmove(lpSendBuff->szData, (char *)&MsgHdr, sizeof(_TMSGHEADER));
-		lpSendBuff->szData[sizeof(_TMSGHEADER) + 1] = '\0';
-
-//		Send(lpSendBuff);
-		m_xSendBuffQ.PushQ((BYTE *)lpSendBuff);
-	}
-}
-
-void CGateInfo::OpenNewUser(char *pszPacket)
-{
-	int					nIndex;
-	_TMSGHEADER			MsgHdr;
-	_LPTMSGHEADER		lpMsgHeader;
-
-	nIndex = g_xUserInfoArr.GetFreeKey();
-
-	if (nIndex >= 0)
-	{
-		CUserInfo * pUserInfo = &g_xUserInfoArr[nIndex];
-
-		pUserInfo->Lock();
-
-		g_xLoginOutUserInfo.AddNewNode(pUserInfo);
-
-		lpMsgHeader = (_LPTMSGHEADER)pszPacket;
-
-		pUserInfo->m_sock			= lpMsgHeader->nSocket;
-		pUserInfo->m_pxPlayerObject	= NULL;
-
-		ZeroMemory(pUserInfo->m_szUserID, sizeof(pUserInfo->m_szUserID));
-		ZeroMemory(pUserInfo->m_szCharName, sizeof(pUserInfo->m_szCharName));
-
-		pUserInfo->m_nCertification		= 0;
-		pUserInfo->m_nClientVersion		= 0;
-		pUserInfo->m_nUserGateIndex		= lpMsgHeader->wUserGateIndex;
-		pUserInfo->m_nUserServerIndex	= nIndex;
-		
-		pUserInfo->m_pGateInfo			= this;
-
-		pUserInfo->m_btCurrentMode		= USERMODE_NOTICE;
-
-		pUserInfo->m_lpTHorseRcd		= NULL;
-
-		pUserInfo->m_bEmpty = false;
-		pUserInfo->Unlock();
-
-		_LPTSENDBUFF lpSendBuff = new _TSENDBUFF;
-
-		MsgHdr.nCode			= 0xAA55AA55;
-		MsgHdr.nSocket			= lpMsgHeader->nSocket;
-		MsgHdr.wUserGateIndex	= lpMsgHeader->wUserGateIndex;
-		MsgHdr.wIdent			= GM_SERVERUSERINDEX;
-		MsgHdr.wUserListIndex	= nIndex;
-		MsgHdr.wTemp			= 0;
-		MsgHdr.nLength			= 0;
-
-		lpSendBuff->nLen		= sizeof(_TMSGHEADER);
-		memmove(lpSendBuff->szData, (char *)&MsgHdr, sizeof(_TMSGHEADER));
-
-		m_xSendBuffQ.PushQ((BYTE *)lpSendBuff);
-//		Send(lpSendBuff);
-/*		DWORD	dwBytesSends = 0;
-
-		OverlappedEx[1].Buffer[sizeof(_TMSGHEADER)] = '\0';
-
-		OverlappedEx[1].nOvFlag	 = OVERLAPPED_SEND;
-
-		OverlappedEx[1].DataBuf.len = sizeof(_TMSGHEADER);
-		OverlappedEx[1].DataBuf.buf = OverlappedEx[1].Buffer;
-
-		WSASend(m_sock, &OverlappedEx[1].DataBuf, 1, &dwBytesSends, 0, (OVERLAPPED *)&OverlappedEx[1], NULL);
-		WSASend(m_sock, &OverlappedEx[1].DataBuf, 1, &dwBytesSends, 0, NULL, NULL);
-*/
-		UpdateStatusBarUsers(TRUE);
-	}
-}
-
-void CGateInfo::xSend()
-{
-	if (m_xSendBuffQ.GetCount())
-	{
-		DWORD	dwBytesSends = 0;
-		int		nPos = 0;
-
-		_LPTSENDBUFF lpSendBuff = (_LPTSENDBUFF)m_xSendBuffQ.PopQ();
-
-		while (lpSendBuff)
+		if (pUserInfo)
 		{
-			memmove(&OverlappedEx[1].Buffer[nPos], lpSendBuff->szData, lpSendBuff->nLen);
-			nPos += lpSendBuff->nLen;
+			MultiByteToWideChar(CP_ACP, 0, pszPacket, -1, pUserInfo->szSockHandle, sizeof(pUserInfo->szSockHandle)/sizeof(TCHAR));
+			MultiByteToWideChar(CP_ACP, 0, pszPos, -1, pUserInfo->szAddress, sizeof(pUserInfo->szAddress)/sizeof(TCHAR));
 
-			delete lpSendBuff;
-			lpSendBuff = NULL;
+			pUserInfo->sock					= nSocket;
+			pUserInfo->nCertification		= 0;
+			pUserInfo->nClientVersion		= 0;
 
-			if (nPos >= 8192)
-				break;
+			ZeroMemory(pUserInfo->szUserID, sizeof(pUserInfo->szUserID));
 
-			lpSendBuff = (_LPTSENDBUFF)m_xSendBuffQ.PopQ();
+			xUserInfoList.AddNewNode(pUserInfo);
+
+			InsertLogMsgParam(IDS_OPEN_USER, pUserInfo->szAddress);
+		}
+	} 
+}
+
+void CGateInfo::ReceiveCloseUser(char *pszPacket)
+{
+	int nSocket = AnsiStrToVal(pszPacket);
+/*
+	map<SOCKET, CUserInfo, less<SOCKET> >::iterator it = pGateInfo->UserInfoMap.find((SOCKET)nSocket);
+
+	if (it != pGateInfo->UserInfoMap.end())
+	{
+		InsertLogMsgParam(IDS_CLOSE_USER, it->second.szAddress);
+
+		pGateInfo->UserInfoMap.erase(it);
+	} */
+}
+
+void CGateInfo::ReceiveSendUser(char *pszPacket)
+{
+	char	*pszPos;//, *pszPos2;
+	int		nSocket;
+	int		nLen = memlen(pszPacket);
+
+	if ((pszPos = (char *)memchr(pszPacket, '/', nLen)))// && (pszPos2 = (char *)memchr(pszPacket, '$', nLen)))
+	{
+		nSocket = AnsiStrToVal(pszPacket);
+
+		pszPos++;
+
+		_LPTGATESENDBUFF lpSendUserData = new _TGATESENDBUFF;
+
+		lpSendUserData->sock		= (SOCKET)nSocket;
+
+		memmove(lpSendUserData->szData, pszPos, memlen(pszPos));
+
+		m_GateQ.PushQ((BYTE *)lpSendUserData);
+	}
+}
+
+void CGateInfo::SendToGate(SOCKET cSock, char *pszPacket)
+{
+	char	szData[256];
+	WSABUF	buf;
+	DWORD	dwSendBytes;
+	
+	int nLen = memlen(pszPacket) - 1;
+
+	szData[0] = '%';
+	
+	char *pszNext = ValToAnsiStr((int)cSock, &szData[1]);
+	
+	*pszNext++ = '/';
+	*pszNext++ = '#';
+
+	memmove(pszNext, pszPacket, nLen);
+
+	pszNext += nLen;
+
+	*pszNext++ = '!';
+	*pszNext++ = '$';
+	*pszNext++ = '\0';
+
+	buf.len = pszNext - szData;
+	buf.buf = szData;
+
+	WSASend(sock, &buf, 1, &dwSendBytes, 0, NULL, NULL);
+}
+
+void CGateInfo::QueryCharacter(SOCKET s, char *pszPacket)
+{
+	_TQUERYCHR			tQueryChr[3];
+	char				szDecodeMsg[128];
+	int					nCnt = 0;
+	char				szQuery[256];
+
+	ZeroMemory(tQueryChr, sizeof(tQueryChr));
+
+	int nPos = fnDecode6BitBufA(pszPacket, szDecodeMsg, sizeof(szDecodeMsg));
+	szDecodeMsg[nPos] = '\0';
+
+	char *pszDevide = (char *)memchr(szDecodeMsg, '/', nPos);
+	
+	if (pszDevide)
+	{
+		*pszDevide++ = '\0';
+
+		sprintf( szQuery, "SELECT * FROM TBL_CHARACTER WHERE FLD_LOGINID='%s'", pszDevide );
+
+		CRecordset *pRec = GetDBManager()->CreateRecordset();
+		
+		if (pRec->Execute( szQuery ))
+		{
+			while (pRec->Fetch() && nCnt < 3)
+			{
+				tQueryChr[nCnt].btClass	 = atoi( pRec->Get( "FLD_JOB" ) );
+				tQueryChr[nCnt].btGender = atoi( pRec->Get( "FLD_GENDER" ) );
+				strcpy( tQueryChr[nCnt].szName, pRec->Get( "FLD_CHARNAME" ) );
+				ChangeSpaceToNull( tQueryChr[nCnt].szName );
+
+				nCnt++;
+			}
 		}
 
-		if (nPos)
-		{
-			memset( &OverlappedEx[1].Overlapped, 0, sizeof( OVERLAPPED ) );
-			OverlappedEx[1].nOvFlag		= OVERLAPPED_SEND;
-			OverlappedEx[1].DataBuf.len	= nPos;
-			OverlappedEx[1].DataBuf.buf	= OverlappedEx[1].Buffer;
+		GetDBManager()->DestroyRecordset( pRec );
 
-			WSASend(
-				m_sock, 
-				&OverlappedEx[1].DataBuf, 
-				1, 
-				&dwBytesSends, 
-				0, 
-				(OVERLAPPED *) &OverlappedEx[1], 
-//				NULL, 
-				NULL
-				);
+		_TDEFAULTMESSAGE	DefaultMsg;
+		char				szEncodeMsg[32];
+		char				szEncodeData[256];
+		char				szEncodePacket[256];
+		
+		if (nCnt > 0 && nCnt < 3)
+		{
+			fnMakeDefMessageA(&DefaultMsg, SM_QUERYCHR, 0, nCnt, 0, 0);
+			nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
+			int nPos2 = fnEncode6BitBufA((unsigned char *)tQueryChr, szEncodeData, sizeof(_TQUERYCHR) * nCnt, sizeof(szEncodeData));
+			
+			memmove(szEncodePacket, szEncodeMsg, nPos);
+			memmove(&szEncodePacket[nPos], szEncodeData, nPos2);
+			szEncodePacket[nPos + nPos2] = '\0';
+				
+			SendToGate(s, szEncodePacket);
+		}
+		else
+		{
+			fnMakeDefMessageA(&DefaultMsg, SM_QUERYCHR_FAIL, 0, 0, 0, 0);
+			nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
+			szEncodeMsg[nPos] = '\0';
+			
+			SendToGate(s, szEncodeMsg);
 		}
 	}
 }
 
-int CGateInfo::Send(_LPTSENDBUFF lpSendBuff)
+void CGateInfo::DeleteExistCharacter(SOCKET s, _LPTCREATECHR lpTCreateChr)
 {
-	DWORD	dwBytesSends = 0;
-	int		nPos = 0;				 	
-	int		nRet = 0;
+	_TDEFAULTMESSAGE	DefaultMsg;
+	char				szEncodeMsg[32];
+	char				szQuery[256];
+	CRecordset			*pRec;
+
+	sprintf( szQuery, "DELETE FROM TBL_CHARACTER WHERE FLD_LOGINID='%s' AND FLD_CHARNAME='%s'", lpTCreateChr->szID, lpTCreateChr->szName );
+
+	pRec = GetDBManager()->CreateRecordset();
+	pRec->Execute( szQuery );
+	GetDBManager()->DestroyRecordset( pRec );
+
+	sprintf( szQuery, "DELETE FROM TBL_CHARACTER_GENITEM WHERE FLD_LOGINID='%s' AND FLD_CHARNAME='%s'", lpTCreateChr->szID, lpTCreateChr->szName );
+
+	pRec = GetDBManager()->CreateRecordset();
+	pRec->Execute( szQuery );
+	GetDBManager()->DestroyRecordset( pRec );
+
+	sprintf( szQuery, "DELETE FROM TBL_CHARACTER_ITEM WHERE FLD_LOGINID='%s' AND FLD_CHARNAME='%s'", lpTCreateChr->szID, lpTCreateChr->szName );
+
+	pRec = GetDBManager()->CreateRecordset();
+	pRec->Execute( szQuery );
+	GetDBManager()->DestroyRecordset( pRec );
+
+	sprintf( szQuery, "DELETE FROM TBL_CHARACTER_MAGIC WHERE FLD_LOGINID='%s' AND FLD_CHARNAME='%s'", lpTCreateChr->szID, lpTCreateChr->szName );
+
+	pRec = GetDBManager()->CreateRecordset();
+	pRec->Execute( szQuery );
+	GetDBManager()->DestroyRecordset( pRec );
+
+	fnMakeDefMessageA(&DefaultMsg, SM_DELCHR_SUCCESS, 0, 4, 0, 0);
+	int nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
+	szEncodeMsg[nPos] = '\0';
 	
-	if ( lpSendBuff )
-		m_xSendBuffQ.PushQ((BYTE *)lpSendBuff);
+	SendToGate(s, szEncodeMsg);
+}
 
-	if (m_fDoSending)
-	{			  
-		return 0;	   
-	}
-	
-	_LPTSENDBUFF lpSBuff = (_LPTSENDBUFF)m_xSendBuffQ.PopQ();
+void CGateInfo::MakeNewCharacter(SOCKET s, _LPTCREATECHR lpTCreateChr)
+{
+	//ERROR: 1=> Exist Charname, 2=>Wrong Name, 3=>Not enough Space, 4=>Error
+	_TDEFAULTMESSAGE	DefaultMsg;
+	char				szEncodeMsg[32];
+	int					nPos;
+	char				szQuery[2048];
 
-	if ( !lpSBuff )	 	
-	{			  
-		return 0;	   
-	}
+	sprintf( szQuery, "SELECT FLD_CHARNAME FROM TBL_CHARACTER WHERE FLD_CHARNAME='%s'", lpTCreateChr->szName );
 
+	CRecordset *pRec = GetDBManager()->CreateRecordset();
 
-	while (lpSBuff)
+	pRec->Execute( szQuery );
+
+	if (pRec->Fetch())
 	{
-		memmove(&OverlappedEx[1].Buffer[nPos], lpSBuff->szData, lpSBuff->nLen);
-		nPos += lpSBuff->nLen;
-
-		delete lpSBuff;
-
-		if (nPos >= 4096)
-			break;
-
-		lpSBuff = (_LPTSENDBUFF)m_xSendBuffQ.PopQ();
-	}
-
-	if ( nPos )
-	{
-		memset( &OverlappedEx[1].Overlapped, 0, sizeof( OVERLAPPED ) );
+		fnMakeDefMessageA(&DefaultMsg, SM_NEWCHR_FAIL, 0, 1, 0, 0);
+		nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
+		szEncodeMsg[nPos] = '\0';
 		
-		OverlappedEx[1].nOvFlag		= OVERLAPPED_SEND;
-		OverlappedEx[1].DataBuf.len	= nPos;
-		OverlappedEx[1].DataBuf.buf	= OverlappedEx[1].Buffer;
+		SendToGate(s, szEncodeMsg);
 
-		int nRet =WSASend(m_sock, &OverlappedEx[1].DataBuf, 1, 
-			&dwBytesSends, 0, (OVERLAPPED *) &OverlappedEx[1], NULL);
+		GetDBManager()->DestroyRecordset( pRec );
 
-		m_fDoSending = TRUE;
+		return;
+	}
+	
+	GetDBManager()->DestroyRecordset( pRec );
+
+	sprintf( szQuery, "SELECT COUNT(FLD_CHARNAME) AS FLD_COUNT FROM TBL_CHARACTER WHERE FLD_CHARNAME='%s'", lpTCreateChr->szName );
+
+	pRec = GetDBManager()->CreateRecordset();
+
+	if (pRec->Execute( szQuery ) || pRec->Fetch() )
+	{
+		if (atoi(pRec->Get( "FLD_COUNT" )) >= 3)
+		{
+			fnMakeDefMessageA(&DefaultMsg, SM_NEWCHR_FAIL, 0, 3, 0, 0);
+			nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
+			szEncodeMsg[nPos] = '\0';
+			
+			SendToGate(s, szEncodeMsg);
+
+			GetDBManager()->DestroyRecordset( pRec );
+
+			return;
+		}
+
+		GetDBManager()->DestroyRecordset( pRec );
+
+		CTblStartPoint::TABLE *table = GetTblStartPoint()->Get( "4" );
+
+		pRec = GetDBManager()->CreateRecordset();
+
+		// TBL_CHARACTER 테이블 추가
+
+		sprintf(szQuery, "INSERT TBL_CHARACTER ("
+						"FLD_LOGINID, FLD_CHARNAME, FLD_JOB, FLD_GENDER, FLD_LEVEL, FLD_DIRECTION, "
+						"FLD_ATTACKMODE, FLD_CX, FLD_CY, FLD_MAPNAME, FLD_GOLD, FLD_HAIR, "
+						"FLD_DRESS_ID, FLD_WEAPON_ID, FLD_LEFTHAND_ID, FLD_RIGHTHAND_ID, FLD_HELMET_ID, "
+						"FLD_NECKLACE_ID, FLD_ARMRINGL_ID, FLD_ARMRINGR_ID, FLD_RINGL_ID, "
+						"FLD_RINGR_ID, FLD_EXP) VALUES ( "
+						"'%s', '%s', %d, %d, 1, 4, "
+						"1, %d, %d, '%s', 0, 0, "
+						"'0', '0', '0', '0', '0', "
+						"'0', '0', '0', '0', "
+						"'0', 0 )",
+						lpTCreateChr->szID, lpTCreateChr->szName, lpTCreateChr->btClass, lpTCreateChr->btGender,
+						table->posX, table->posY, table->mapName);
+		pRec->Execute( szQuery );
+
+		sprintf(szQuery, "INSERT TBL_CHARACTER_GENITEM (FLD_LOGINID, FLD_CHARNAME, FLD_ITEMINDEX) VALUES ('%s', '%s', 'G00080008000')",
+							lpTCreateChr->szID, lpTCreateChr->szName);
+		pRec->Execute( szQuery );
+		
+		GetDBManager()->DestroyRecordset( pRec );
+		
+		_TLOADHUMAN		human;
+		_TMAKEITEMRCD	makeItem;
+		memset( &human, 0, sizeof( human ) );
+		memset( &makeItem, 0, sizeof( makeItem ) );
+
+		strcpy( human.szUserID, lpTCreateChr->szID );
+		strcpy( human.szCharName, lpTCreateChr->szName );
+
+		// 평복 추가 (0: 남, 1: 여)
+		makeItem.szStdType	= 'B';
+		makeItem.nStdIndex	= lpTCreateChr->btGender ? 34 : 33;
+		makeItem.nDura		= 5000;
+		makeItem.nDuraMax	= 5000;
+		MakeNewItem( NULL, &human, &makeItem, 0 );
+
+		// 목검 추가
+		makeItem.szStdType	= 'A';
+		makeItem.nStdIndex	= 7;
+		makeItem.nDura		= 4000;
+		makeItem.nDuraMax	= 4000;
+		MakeNewItem( NULL, &human, &makeItem, 0 );
+		
+		fnMakeDefMessageA(&DefaultMsg, SM_NEWCHR_SUCCESS, 0, 0, 0, 0);
+		nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
+		szEncodeMsg[nPos] = '\0';
+		
+		SendToGate(s, szEncodeMsg);
+
+		return;
 	}
 
-	return nRet;
+	fnMakeDefMessageA(&DefaultMsg, SM_NEWCHR_FAIL, 0, 4, 0, 0);
+	nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
+	szEncodeMsg[nPos] = '\0';
+	
+	SendToGate(s, szEncodeMsg);
+
+	GetDBManager()->DestroyRecordset( pRec );
 }
 
-int CGateInfo::Recv()
+void CGateInfo::GetSelectCharacter(SOCKET s, char *pszPacket)
 {
-	DWORD nRecvBytes = 0, nFlags = 0;
+	char				szDecodeMsg[128];
+	char				szServerIP[32];
+	char				szEncodeMsg[32];
+	char				szEncodeData[64];
+	char				szEncodePacket[256];
+	_TDEFAULTMESSAGE	DefaultMsg;
+	
+	// ORZ: Load Balancing, 접속수가 가장 적은 게이트 서버 IP 선택
+	GAMESERVERINFO *pBestServer = NULL;
+	GAMESERVERINFO *pTemp;
 
-	OverlappedEx[0].nOvFlag		= OVERLAPPED_RECV;
-	OverlappedEx[0].DataBuf.len = DATA_BUFSIZE - OverlappedEx[0].bufLen;
-	OverlappedEx[0].DataBuf.buf = OverlappedEx[0].Buffer + OverlappedEx[0].bufLen;
+//	EnterCriticalSection( &g_xGameServerList.m_cs );
+	for ( PLISTNODE pNode = g_xGameServerList.GetHead();pNode; pNode = g_xGameServerList.GetNext( pNode ) )
+	{
+		pTemp = g_xGameServerList.GetData( pNode );
+		
+		if ( !pBestServer || pTemp->connCnt < pBestServer->connCnt )
+		{
+			pBestServer = pTemp;
+			continue;
+		}
+	}
 
-	memset( &OverlappedEx[0].Overlapped, 0, sizeof( OverlappedEx[0].Overlapped ) );
+	pBestServer->connCnt++;
+//	LeaveCriticalSection( &g_xGameServerList.m_cs );
 
-	return WSARecv( m_sock, &OverlappedEx[0].DataBuf, 1, &nRecvBytes, &nFlags, &OverlappedEx[0].Overlapped, 0 );
+	strcpy( szServerIP, pBestServer->ip );
+	// ORZ: from here
+
+	int nPos = fnDecode6BitBufA(pszPacket, szDecodeMsg, sizeof(szDecodeMsg));
+	szDecodeMsg[nPos] = '\0';
+
+	char *pszDevide = (char *)memchr(szDecodeMsg, '/', nPos);
+	
+	if (pszDevide)
+	{
+		*pszDevide++ = '\0';
+
+		// 서버 선택이 가능하도록 수정
+		_TLOADHUMAN		tLoadHuman;
+		CServerInfo*	pServerInfo;
+
+		memcpy(tLoadHuman.szUserID, szDecodeMsg, memlen(szDecodeMsg));
+		memcpy(tLoadHuman.szCharName, pszDevide, memlen(pszDevide));
+		ZeroMemory(tLoadHuman.szUserAddr, sizeof(tLoadHuman.szUserAddr));
+		tLoadHuman.nCertification = 0;
+
+		PLISTNODE pListNode = g_xServerList.GetHead();
+
+		if (pListNode)
+			pServerInfo = g_xServerList.GetData(pListNode);
+
+		GetLoadHumanRcd(pServerInfo, &tLoadHuman, 0);
+
+		fnMakeDefMessageA(&DefaultMsg, SM_STARTPLAY, 0, 0, 0, 0);
+		nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
+		int nPos2 = fnEncode6BitBufA((unsigned char *)szServerIP, szEncodeData, memlen(szServerIP) -1, sizeof(szEncodeData));
+		
+		memmove(szEncodePacket, szEncodeMsg, nPos);
+		memmove(&szEncodePacket[nPos], szEncodeData, nPos2);
+		szEncodePacket[nPos + nPos2] = '\0';
+		
+		// ORZ: 전체 리스트에 추가한다.
+		// 같은 아이디가 이미 존재하거나 메모리 부족등의 이유로 실패할 수 있다.
+//		if ( GetGlobalUserList()->Insert( tLoadHuman.szCharName, szServerIP ) )
+			SendToGate(s, szEncodePacket);
+//		else
+//		{
+//			fnMakeDefMessageA(&DefaultMsg, SM_STARTFAIL, 0, 0, 0, 0);
+//			nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
+//			szEncodeMsg[nPos] = '\0';
+			
+//			SendToGate(pGateInfo->sock, s, szEncodeMsg);
+//		}
+	}
 }
 
-bool CGateInfo::HasCompletionPacket()
-{
-	if ( OverlappedEx[0].bufLen < sizeof( _TMSGHEADER ) )
-		return false;
-
-	_LPTMSGHEADER pMsgHeader = (_LPTMSGHEADER) &OverlappedEx[0].Buffer;
-
-	return (unsigned) OverlappedEx[0].bufLen >= sizeof( _TMSGHEADER ) + pMsgHeader->nLength;
-}
-
-char * CGateInfo::ExtractPacket( char *pPacket )
-{
-	int packetLen = sizeof( _TMSGHEADER ) + ((_LPTMSGHEADER) &OverlappedEx[0].Buffer)->nLength;
-
-	memcpy( pPacket, OverlappedEx[0].Buffer, packetLen );
-
-	memmove( OverlappedEx[0].Buffer, OverlappedEx[0].Buffer + packetLen, DATA_BUFSIZE - packetLen );
-	OverlappedEx[0].bufLen -= packetLen;
-
-	return pPacket + packetLen;
-}
