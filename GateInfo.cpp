@@ -1,89 +1,92 @@
 #include "stdafx.h"
-#include "dbsvr.h"
-#include "globalUserList.h"
 #include "../def/dbmgr.h"
 #include <stdio.h>
-#include "tableList.h"
-#include "processdbmsg.h"
 
-void GetLoadHumanRcd(CServerInfo* pServerInfo, _LPTLOADHUMAN lpLoadHuman, int nRecog);
+extern CWHList< GAMESERVERINFO* >	g_xGameServerList;
+extern char							g_szServerList[1024];
 
-extern CWHList<CServerInfo*>		g_xServerList;
-extern CWHList< GAMESERVERINFO * >	g_xGameServerList;
-
-void CGateInfo::ReceiveOpenUser(char *pszPacket)
+int CompareDBString( char *str1, char *str2 )
 {
-	char	*pszPos;
-	int		nSocket;
-	int		nLen = memlen(pszPacket);
+	ChangeSpaceToNull( str1 );
+	ChangeSpaceToNull( str2 );
 
-	if (pszPos = (char *)memchr(pszPacket, '/', nLen))
+	return strcmp( str1, str2 );
+}
+
+int GetCertification() 
+{ 
+	static long	g_nCertification = 30;
+
+	InterlockedIncrement(&g_nCertification);
+
+	if (g_nCertification >= 0x7FFFFFFF) 
+		g_nCertification = 30; 
+	
+	return g_nCertification; 
+}
+
+/* **************************************************************************************
+
+		Close
+		
+		PURPOSE : Send packet to login gate server.
+		
+		NOTE
+		
+		1. Packet construction : Packet % + client socket handle + / # + packet + ! + $
+
+   ************************************************************************************** */
+
+void CGateInfo::Close()
+{
+	PLISTNODE		pListNode;
+	CUserInfo*		pUserInfo;
+
+	if (xUserInfoList.GetCount())
 	{
-		nSocket = AnsiStrToVal(pszPacket);
+		pListNode = xUserInfoList.GetHead();
 
-		pszPos++;
-
-		CUserInfo* pUserInfo = new CUserInfo;
-
-		if (pUserInfo)
+		while (pListNode)
 		{
-			MultiByteToWideChar(CP_ACP, 0, pszPacket, -1, pUserInfo->szSockHandle, sizeof(pUserInfo->szSockHandle)/sizeof(TCHAR));
-			MultiByteToWideChar(CP_ACP, 0, pszPos, -1, pUserInfo->szAddress, sizeof(pUserInfo->szAddress)/sizeof(TCHAR));
+			pUserInfo = xUserInfoList.GetData(pListNode);
 
-			pUserInfo->sock					= nSocket;
-			pUserInfo->nCertification		= 0;
-			pUserInfo->nClientVersion		= 0;
+			if (pUserInfo)
+			{
+				delete pUserInfo;
+				pUserInfo = NULL;
 
-			ZeroMemory(pUserInfo->szUserID, sizeof(pUserInfo->szUserID));
+				pListNode = xUserInfoList.RemoveNode(pListNode);
 
-			xUserInfoList.AddNewNode(pUserInfo);
+				continue;
+			}
 
-			InsertLogMsgParam(IDS_OPEN_USER, pUserInfo->szAddress);
+			pListNode = xUserInfoList.GetNext(pListNode);
 		}
-	} 
-}
-
-void CGateInfo::ReceiveCloseUser(char *pszPacket)
-{
-	int nSocket = AnsiStrToVal(pszPacket);
-/*
-	map<SOCKET, CUserInfo, less<SOCKET> >::iterator it = pGateInfo->UserInfoMap.find((SOCKET)nSocket);
-
-	if (it != pGateInfo->UserInfoMap.end())
-	{
-		InsertLogMsgParam(IDS_CLOSE_USER, it->second.szAddress);
-
-		pGateInfo->UserInfoMap.erase(it);
-	} */
-}
-
-void CGateInfo::ReceiveSendUser(char *pszPacket)
-{
-	char	*pszPos;//, *pszPos2;
-	int		nSocket;
-	int		nLen = memlen(pszPacket);
-
-	if ((pszPos = (char *)memchr(pszPacket, '/', nLen)))// && (pszPos2 = (char *)memchr(pszPacket, '$', nLen)))
-	{
-		nSocket = AnsiStrToVal(pszPacket);
-
-		pszPos++;
-
-		_LPTGATESENDBUFF lpSendUserData = new _TGATESENDBUFF;
-
-		lpSendUserData->sock		= (SOCKET)nSocket;
-
-		memmove(lpSendUserData->szData, pszPos, memlen(pszPos));
-
-		m_GateQ.PushQ((BYTE *)lpSendUserData);
 	}
+
+	closesocket(sock);
+	sock = INVALID_SOCKET;
 }
+
+/* **************************************************************************************
+
+		SendToGate 
+		
+		PURPOSE : Send packet to login gate server.
+		
+		NOTE
+		
+		1. Packet construction : Packet % + client socket handle + / # + packet + ! + $
+
+   ************************************************************************************** */
 
 void CGateInfo::SendToGate(SOCKET cSock, char *pszPacket)
 {
 	char	szData[256];
 	WSABUF	buf;
 	DWORD	dwSendBytes;
+	
+//	wsprintf(szData, _TEXT("%%%d/#%s!$"), (int)cSock, pszPacket);
 	
 	int nLen = memlen(pszPacket) - 1;
 
@@ -108,302 +111,482 @@ void CGateInfo::SendToGate(SOCKET cSock, char *pszPacket)
 	WSASend(sock, &buf, 1, &dwSendBytes, 0, NULL, NULL);
 }
 
-void CGateInfo::QueryCharacter(SOCKET s, char *pszPacket)
+/* **************************************************************************************
+
+		MakeNewUser
+		
+		PURPOSE : 
+		
+		NOTE
+
+   ************************************************************************************** */
+
+void CGateInfo::MakeNewUser(char *pszPacket)
 {
-	_TQUERYCHR			tQueryChr[3];
-	char				szDecodeMsg[128];
-	int					nCnt = 0;
-	char				szQuery[256];
+	char				szDecodeMsg[256];
+	char				szEncodeMsg[32];
+	char				*pszID, *pszName, *pszPassword;
+	_TDEFAULTMESSAGE	DefMsg;
 
-	ZeroMemory(tQueryChr, sizeof(tQueryChr));
+	fnDecodeMessageA(&DefMsg, pszPacket);
 
-	int nPos = fnDecode6BitBufA(pszPacket, szDecodeMsg, sizeof(szDecodeMsg));
-	szDecodeMsg[nPos] = '\0';
-
-	char *pszDevide = (char *)memchr(szDecodeMsg, '/', nPos);
-	
-	if (pszDevide)
+	if (DefMsg.wIdent == CM_ADDNEWUSER)
 	{
-		*pszDevide++ = '\0';
+		int nPos = fnDecode6BitBufA((pszPacket + DEFBLOCKSIZE), szDecodeMsg, sizeof(szDecodeMsg));
+		szDecodeMsg[nPos] = '\0';
 
-		sprintf( szQuery, "SELECT * FROM TBL_CHARACTER WHERE FLD_LOGINID='%s'", pszDevide );
+		pszID		= &szDecodeMsg[0];
+		
+		pszName		= (char *)memchr(szDecodeMsg, '/', memlen(szDecodeMsg) - 1);
+		*pszName = '\0';
+		pszName++;
+
+		pszPassword	= (char *)memchr(pszName, '/', memlen(pszName) - 1);
+		*pszPassword = '\0';
+		pszPassword++;
+
+		if ((memlen(pszID) - 1) || (memlen(pszName) - 1) || (memlen(pszPassword) - 1))
+		{
+			char szQuery[1024];
+			sprintf( szQuery, 
+				"INSERT TBL_ACCOUNT( FLD_LOGINID, FLD_PASSWORD, FLD_USERNAME, FLD_CERTIFICATION ) "
+				"VALUES( '%s', '%s', '%s', 0 )",
+				pszID, pszPassword, pszName );
+
+			CRecordset *pRec = GetDBManager()->CreateRecordset();
+			if ( pRec->Execute( szQuery ) && pRec->GetRowCount() )
+				fnMakeDefMessageA( &DefMsg, SM_NEWID_SUCCESS, 0, 0, 0, 0 );
+			else
+				fnMakeDefMessageA( &DefMsg, SM_NEWID_FAIL, 0, 0, 0, 0 );
+			GetDBManager()->DestroyRecordset( pRec );
+			// -----------------------------------------------------------------------------------
+		}
+		else
+			fnMakeDefMessageA(&DefMsg, SM_NEWID_FAIL, 0, 0, 0, 0);
+
+		fnEncodeMessageA(&DefMsg, szEncodeMsg, sizeof(szEncodeMsg));
+
+		szDecodeMsg[0] = '#';
+		memmove(&szDecodeMsg[1], szEncodeMsg, DEFBLOCKSIZE);
+		szDecodeMsg[DEFBLOCKSIZE + 1] = '!';
+		szDecodeMsg[DEFBLOCKSIZE + 2] = '\0';
+
+		send(sock, szDecodeMsg, DEFBLOCKSIZE + 2, 0); 
+	}
+}
+
+/* **************************************************************************************
+
+		ReceiveServerMsg
+		
+		PURPOSE : 
+		
+		NOTE
+
+   ************************************************************************************** */
+
+void CGateInfo::ReceiveServerMsg(char *pszPacket)
+{
+	char		*pszPos;
+	int			nCertification;
+	int			nLen = memlen(pszPacket);
+
+	if (pszPos = (char *)memchr(pszPacket, '/', nLen))
+	{
+		*pszPos++ = '\0';
+		nCertification = AnsiStrToVal(pszPos);
+
+		char szQuery[256];
+		sprintf( szQuery, 
+			"UPDATE TBL_ACCOUNT SET FLD_CERTIFICATION=%d WHERE FLD_LOGINID='%s'", 
+			nCertification, pszPacket );
 
 		CRecordset *pRec = GetDBManager()->CreateRecordset();
-		
-		if (pRec->Execute( szQuery ))
-		{
-			while (pRec->Fetch() && nCnt < 3)
-			{
-				tQueryChr[nCnt].btClass	 = atoi( pRec->Get( "FLD_JOB" ) );
-				tQueryChr[nCnt].btGender = atoi( pRec->Get( "FLD_GENDER" ) );
-				strcpy( tQueryChr[nCnt].szName, pRec->Get( "FLD_CHARNAME" ) );
-				ChangeSpaceToNull( tQueryChr[nCnt].szName );
+		pRec->Execute( szQuery );
+		GetDBManager()->DestroyRecordset( pRec );
+	}
+}
 
-				nCnt++;
+void CGateInfo::ReceiveOpenUser(char *pszPacket)
+{
+	char	*pszPos;
+	int		nSocket;
+	int		nLen = memlen(pszPacket);
+
+	if (pszPos = (char *)memchr(pszPacket, '/', nLen))
+	{
+		nSocket = AnsiStrToVal(pszPacket);
+
+		pszPos++;
+
+		CUserInfo* pUserInfo = new CUserInfo;
+
+		if (pUserInfo)
+		{
+			MultiByteToWideChar(CP_ACP, 0, pszPacket, -1, pUserInfo->szSockHandle, sizeof(pUserInfo->szSockHandle)/sizeof(TCHAR));
+			MultiByteToWideChar(CP_ACP, 0, pszPos, -1, pUserInfo->szAddress, sizeof(pUserInfo->szAddress)/sizeof(TCHAR));
+
+			pUserInfo->sock					= nSocket;
+			pUserInfo->nCertification		= 0;
+			pUserInfo->nClientVersion		= 0;
+			pUserInfo->fSelServerOk			= FALSE;
+
+			ZeroMemory(pUserInfo->szUserID, sizeof(pUserInfo->szUserID));
+
+			xUserInfoList.AddNewNode(pUserInfo);
+
+			InsertLogMsgParam(IDS_OPEN_USER, pUserInfo->szAddress);
+		}
+	} 
+}
+
+/* **************************************************************************************
+
+		ReceiveCloseUser
+		
+		PURPOSE : 
+		
+		NOTE
+
+   ************************************************************************************** */
+
+void CGateInfo::ReceiveCloseUser(char *pszPacket)
+{
+	int nSocket = AnsiStrToVal(pszPacket);
+}
+
+/* **************************************************************************************
+
+		ReceiveSendUser
+		
+		PURPOSE : 
+		
+		NOTE
+
+   ************************************************************************************** */
+
+void CGateInfo::ReceiveSendUser(char *pszPacket)
+{
+	char	*pszPos;
+	int		nSocket;
+	int		nLen = memlen(pszPacket);
+
+	if ((pszPos = (char *)memchr(pszPacket, '/', nLen)))
+	{
+		nSocket = AnsiStrToVal(pszPacket);
+
+		pszPos++;
+
+		_LPTSENDBUFF lpSendUserData = new _TSENDBUFF;
+
+		lpSendUserData->sock		= (SOCKET)nSocket;
+
+		memmove(lpSendUserData->szData, pszPos, memlen(pszPos));
+
+		g_SendToGateQ.PushQ((BYTE *)lpSendUserData);
+	}
+}
+
+/* **************************************************************************************
+
+		ProcSelectServer
+		
+		PURPOSE : 
+		
+		NOTE
+
+   ************************************************************************************** */
+
+void CGateInfo::ProcSelectServer(SOCKET s, WORD wServerIndex)
+{
+	_TDEFAULTMESSAGE	DefMsg;
+	char				szEncodePacket[128];
+	char				szEncodeAllPacket[256];
+	char				szEncodeMsg[24];
+	char				*pServerIP;
+	GAMESERVERINFO		*pServerInfo;
+
+	PLISTNODE pListNode = xUserInfoList.GetHead();
+
+	while (pListNode)
+	{
+		CUserInfo *pUserInfo = xUserInfoList.GetData(pListNode);
+
+		if (pUserInfo->sock == s)
+		{
+			if (!pUserInfo->fSelServerOk)
+			{
+				fnMakeDefMessageA(&DefMsg, SM_SELECTSERVER_OK, 0, pUserInfo->nCertification, 0, 0);		
+				int nPos = fnEncodeMessageA(&DefMsg, szEncodeMsg, sizeof(szEncodePacket));
+				szEncodeMsg[nPos] = '\0';
+
+				for ( PLISTNODE pNode = g_xGameServerList.GetHead(); pNode; pNode = g_xGameServerList.GetNext( pNode ) )
+				{
+					pServerInfo = g_xGameServerList.GetData( pNode );
+					
+					if ( pServerInfo->index == wServerIndex )
+					{
+						pServerIP = pServerInfo->ip;
+						pServerInfo->connCnt++;
+						break;
+					}
+				}
+
+				if ( !pServerIP )
+					break;
+
+				pUserInfo->nServerID = wServerIndex;
+
+				int nPos2 = fnEncode6BitBufA((unsigned char *)pServerIP, szEncodePacket, memlen(pServerIP), sizeof(szEncodePacket));
+				szEncodePacket[nPos2] = '\0';
+
+				memmove(szEncodeAllPacket, szEncodeMsg, nPos);
+				memmove(&szEncodeAllPacket[nPos], szEncodePacket, nPos2);
+				szEncodeAllPacket[nPos + nPos2] = '\0';
+
+				SendToGate(s, szEncodeAllPacket);
+
+				pUserInfo->fSelServerOk = TRUE;
+
+				pListNode = xUserInfoList.RemoveNode(pListNode);
+			}
+		}
+		else
+			pListNode = xUserInfoList.GetNext(pListNode);
+	}
+}
+
+/* **************************************************************************************
+
+		ParseUserEntry
+		
+		PURPOSE : 
+		
+		NOTE
+
+   ************************************************************************************** */
+
+bool CGateInfo::ParseUserEntry( char *buf, _AUSERENTRYINFO *userInfo )
+{
+	char seps[] = "\001";
+	char *token = strtok( buf, seps );
+	int  step   = 0;
+	
+	__try
+	{
+		while ( token )
+		{
+			switch ( step++ )
+			{
+				case 0: strcpy( userInfo->szLoginID, token );
+				case 1: strcpy( userInfo->szPassword, token ); 
+				case 2: strcpy( userInfo->szUserName, token );
+				case 3: strcpy( userInfo->szSSNo, token );
+				case 4: strcpy( userInfo->szBirthDay, token ); 
+				case 5: strcpy( userInfo->szZipCode, token );
+				case 6: strcpy( userInfo->szAddress1, token ); 
+				case 7: strcpy( userInfo->szAddress2, token );
+				case 8: strcpy( userInfo->szPhone, token ); 
+				case 9: strcpy( userInfo->szMobilePhone, token ); 
+				case 10: strcpy( userInfo->szEmail, token ); 
+				case 11: strcpy( userInfo->szQuiz, token ); 
+				case 12: strcpy( userInfo->szAnswer, token ); 
+				case 13: strcpy( userInfo->szQuiz2, token ); 
+				case 14: strcpy( userInfo->szAnswer2, token ); 
+			}	
+			
+			token = strtok( NULL, seps );
+		}
+	}
+	__except ( EXCEPTION_EXECUTE_HANDLER )
+	{
+		return false;
+	}
+	
+	return step >= 15;
+}
+
+/* **************************************************************************************
+
+		ProcAddUser
+		
+		PURPOSE : 
+		
+		NOTE
+
+   ************************************************************************************** */
+
+void CGateInfo::ProcAddUser(SOCKET s, char *pszData)
+{
+	char				szEntryInfo[2048];
+	_AUSERENTRYINFO		UserEntryInfo;
+	_TDEFAULTMESSAGE	DefMsg;
+	char				szEncodePacket[64];
+
+	int len = fnDecode6BitBufA(pszData, (char *)&szEntryInfo, sizeof(szEntryInfo));
+	szEntryInfo[len] = '\0';
+
+	if ( !ParseUserEntry( szEntryInfo, &UserEntryInfo ) )
+		fnMakeDefMessageA(&DefMsg, SM_NEWID_FAIL, 0, 0, 0, 0);
+	else
+	{	
+		char szQuery[1024];
+		sprintf( szQuery, 
+			"SELECT * FROM TBL_ACCOUNT WHERE FLD_LOGINID='%s'",
+			UserEntryInfo.szLoginID );
+
+		CRecordset *pRec = GetDBManager()->CreateRecordset();
+
+		if (!pRec->Execute( szQuery ))
+			fnMakeDefMessageA(&DefMsg, SM_NEWID_FAIL, 0, 0, 0, 0);
+
+		if ( pRec->Fetch() )
+			fnMakeDefMessageA(&DefMsg, SM_NEWID_FAIL, 0, 0, 0, 0);
+		else
+		{
+			GetDBManager()->DestroyRecordset( pRec );
+
+			pRec = GetDBManager()->CreateRecordset();
+
+			sprintf( szQuery, 
+				"INSERT TBL_ACCOUNT(FLD_LOGINID, FLD_PASSWORD, FLD_USERNAME, FLD_CERTIFICATION) "
+				"VALUES( '%s', '%s', '%s', 0 )",
+				UserEntryInfo.szLoginID, 
+				UserEntryInfo.szPassword, 
+				UserEntryInfo.szUserName );
+
+			pRec->Execute( szQuery );
+
+			sprintf( szQuery,
+				"INSERT TBL_ACCOUNTADD(FLD_LOGINID, FLD_SSNO, FLD_BIRTHDAY, FLD_ADDRESS1, FLD_ADDRESS2, "
+				                      "FLD_PHONE, FLD_MOBILEPHONE, FLD_EMAIL, FLD_QUIZ1, FLD_ANSWER1, FLD_QUIZ2, FLD_ANSWER2) "
+				"VALUES( '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s' )",
+				UserEntryInfo.szLoginID,
+				UserEntryInfo.szSSNo,
+				UserEntryInfo.szBirthDay,
+				UserEntryInfo.szAddress1,
+				UserEntryInfo.szAddress2,
+				UserEntryInfo.szPhone,
+				UserEntryInfo.szMobilePhone,
+				UserEntryInfo.szEmail,
+				UserEntryInfo.szQuiz,
+				UserEntryInfo.szAnswer,
+				UserEntryInfo.szQuiz2,
+				UserEntryInfo.szAnswer2 );
+
+			pRec->Execute( szQuery );
+		}
+
+		GetDBManager()->DestroyRecordset( pRec );
+				
+		fnMakeDefMessageA(&DefMsg, SM_NEWID_SUCCESS, 0, 0, 0, 0);
+	
+		TCHAR szID[32];
+		MultiByteToWideChar( CP_ACP, 0, UserEntryInfo.szLoginID, -1, szID, sizeof( szID ) / sizeof( TCHAR ) );
+		InsertLogMsgParam(IDS_COMPLETENEWUSER, szID);
+	}		
+	
+	fnEncodeMessageA(&DefMsg, szEncodePacket, sizeof(szEncodePacket));
+	SendToGate(s, szEncodePacket);
+}
+
+/* **************************************************************************************
+
+		ProcLogin
+		
+		PURPOSE : 
+		
+		NOTE
+
+   ************************************************************************************** */
+
+void CGateInfo::ProcLogin(SOCKET s, char *pszData)
+{
+	char				szIDPassword[32];
+	char				*pszID, *pszPassword;
+	char				szEncodePacket[64];
+	_TDEFAULTMESSAGE	DefMsg;
+	int					nPos;
+	char				szQuery[256];
+
+	if (memlen(pszData) - 1 <= 0) return;
+	
+	PLISTNODE pListNode = xUserInfoList.GetHead();
+
+	while (pListNode)
+	{
+		CUserInfo *pUserInfo = xUserInfoList.GetData(pListNode);
+
+		if (pUserInfo->sock == s)
+		{
+			int nDecodeLen = fnDecode6BitBufA(pszData, szIDPassword, sizeof(szIDPassword));
+			szIDPassword[nDecodeLen] = '\0';
+
+			pszID		= &szIDPassword[0];
+
+			if (pszPassword	= (char *)memchr(szIDPassword, '/', sizeof(szIDPassword)))
+			{
+				*pszPassword = '\0';
+				pszPassword++;
+
+				sprintf( szQuery, "SELECT * FROM TBL_ACCOUNT WHERE FLD_LOGINID='%s'", pszID );
+
+				CRecordset *pRec = GetDBManager()->CreateRecordset();
+
+				if ( !pRec->Execute( szQuery ) || !pRec->Fetch() )
+					fnMakeDefMessageA( &DefMsg, SM_ID_NOTFOUND, 0, 0, 0, 0 );
+				else if ( CompareDBString( pszPassword, pRec->Get( "FLD_PASSWORD" ) ) != 0 )
+					fnMakeDefMessageA( &DefMsg, SM_PASSWD_FAIL, 0, 0, 0, 0 );
+				else
+				{
+					int nCertCode = atoi( pRec->Get( "FLD_CERTIFICATION" ) );
+		/*
+					if ( nCertCode > 0 && nCertCode < 30 )
+						fnMakeDefMessageA(&DefMsg, SM_CERTIFICATION_FAIL, (nCertCode + 1), 0, 0, 0);
+					else if ( nCertCode >= 30 )
+						fnMakeDefMessageA(&DefMsg, SM_CERTIFICATION_FAIL, 1, 0, 0, 0);
+					else*/
+					{
+						char szEncodeServerList[512];
+						char szEncodeAllPacket[1024];
+						
+						fnMakeDefMessageA(&DefMsg, SM_PASSOK_SELECTSERVER, 0, 1, 0, 0);		
+						nPos = fnEncodeMessageA(&DefMsg, szEncodePacket, sizeof(szEncodePacket));
+						szEncodePacket[nPos] = '\0';
+						
+						int nPos2 = fnEncode6BitBufA((unsigned char *)g_szServerList, szEncodeServerList, memlen(g_szServerList), sizeof(szEncodeServerList));
+						szEncodeServerList[nPos2] = '\0';
+						
+						memmove(szEncodeAllPacket, szEncodePacket, nPos);
+						memmove(&szEncodeAllPacket[nPos], szEncodeServerList, memlen(szEncodeServerList));
+						
+						SendToGate(s, szEncodeAllPacket);
+										
+						GetDBManager()->DestroyRecordset( pRec );
+
+						pUserInfo->nCertification = GetCertification();
+
+		//				pRec = GetDBManager()->CreateRecordset();
+		//				sprintf( szQuery, 
+		//					"UPDATE TBL_ACCOUNT SET FLD_CERTIFICATION=%d WHERE FLD_LOGINID='%s'",
+		//					GetCertification(), pszID );
+		//				pRec->Execute( szQuery );
+						
+		//				GetDBManager()->DestroyRecordset( pRec );
+
+						return;
+					}
+				}
+
+				GetDBManager()->DestroyRecordset( pRec );
+
+				nPos = fnEncodeMessageA(&DefMsg, szEncodePacket, sizeof(szEncodePacket));
+				szEncodePacket[nPos] = '\0';
+
+				SendToGate(s, szEncodePacket);
 			}
 		}
 
-		GetDBManager()->DestroyRecordset( pRec );
-
-		_TDEFAULTMESSAGE	DefaultMsg;
-		char				szEncodeMsg[32];
-		char				szEncodeData[256];
-		char				szEncodePacket[256];
-		
-		if (nCnt > 0 && nCnt < 3)
-		{
-			fnMakeDefMessageA(&DefaultMsg, SM_QUERYCHR, 0, nCnt, 0, 0);
-			nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
-			int nPos2 = fnEncode6BitBufA((unsigned char *)tQueryChr, szEncodeData, sizeof(_TQUERYCHR) * nCnt, sizeof(szEncodeData));
-			
-			memmove(szEncodePacket, szEncodeMsg, nPos);
-			memmove(&szEncodePacket[nPos], szEncodeData, nPos2);
-			szEncodePacket[nPos + nPos2] = '\0';
-				
-			SendToGate(s, szEncodePacket);
-		}
-		else
-		{
-			fnMakeDefMessageA(&DefaultMsg, SM_QUERYCHR_FAIL, 0, 0, 0, 0);
-			nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
-			szEncodeMsg[nPos] = '\0';
-			
-			SendToGate(s, szEncodeMsg);
-		}
+		pListNode = xUserInfoList.GetNext(pListNode);
 	}
 }
-
-void CGateInfo::DeleteExistCharacter(SOCKET s, _LPTCREATECHR lpTCreateChr)
-{
-	_TDEFAULTMESSAGE	DefaultMsg;
-	char				szEncodeMsg[32];
-	char				szQuery[256];
-	CRecordset			*pRec;
-
-	sprintf( szQuery, "DELETE FROM TBL_CHARACTER WHERE FLD_LOGINID='%s' AND FLD_CHARNAME='%s'", lpTCreateChr->szID, lpTCreateChr->szName );
-
-	pRec = GetDBManager()->CreateRecordset();
-	pRec->Execute( szQuery );
-	GetDBManager()->DestroyRecordset( pRec );
-
-	sprintf( szQuery, "DELETE FROM TBL_CHARACTER_GENITEM WHERE FLD_LOGINID='%s' AND FLD_CHARNAME='%s'", lpTCreateChr->szID, lpTCreateChr->szName );
-
-	pRec = GetDBManager()->CreateRecordset();
-	pRec->Execute( szQuery );
-	GetDBManager()->DestroyRecordset( pRec );
-
-	sprintf( szQuery, "DELETE FROM TBL_CHARACTER_ITEM WHERE FLD_LOGINID='%s' AND FLD_CHARNAME='%s'", lpTCreateChr->szID, lpTCreateChr->szName );
-
-	pRec = GetDBManager()->CreateRecordset();
-	pRec->Execute( szQuery );
-	GetDBManager()->DestroyRecordset( pRec );
-
-	sprintf( szQuery, "DELETE FROM TBL_CHARACTER_MAGIC WHERE FLD_LOGINID='%s' AND FLD_CHARNAME='%s'", lpTCreateChr->szID, lpTCreateChr->szName );
-
-	pRec = GetDBManager()->CreateRecordset();
-	pRec->Execute( szQuery );
-	GetDBManager()->DestroyRecordset( pRec );
-
-	fnMakeDefMessageA(&DefaultMsg, SM_DELCHR_SUCCESS, 0, 4, 0, 0);
-	int nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
-	szEncodeMsg[nPos] = '\0';
-	
-	SendToGate(s, szEncodeMsg);
-}
-
-void CGateInfo::MakeNewCharacter(SOCKET s, _LPTCREATECHR lpTCreateChr)
-{
-	//ERROR: 1=> Exist Charname, 2=>Wrong Name, 3=>Not enough Space, 4=>Error
-	_TDEFAULTMESSAGE	DefaultMsg;
-	char				szEncodeMsg[32];
-	int					nPos;
-	char				szQuery[2048];
-
-	sprintf( szQuery, "SELECT FLD_CHARNAME FROM TBL_CHARACTER WHERE FLD_CHARNAME='%s'", lpTCreateChr->szName );
-
-	CRecordset *pRec = GetDBManager()->CreateRecordset();
-
-	pRec->Execute( szQuery );
-
-	if (pRec->Fetch())
-	{
-		fnMakeDefMessageA(&DefaultMsg, SM_NEWCHR_FAIL, 0, 1, 0, 0);
-		nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
-		szEncodeMsg[nPos] = '\0';
-		
-		SendToGate(s, szEncodeMsg);
-
-		GetDBManager()->DestroyRecordset( pRec );
-
-		return;
-	}
-	
-	GetDBManager()->DestroyRecordset( pRec );
-
-	sprintf( szQuery, "SELECT COUNT(FLD_CHARNAME) AS FLD_COUNT FROM TBL_CHARACTER WHERE FLD_CHARNAME='%s'", lpTCreateChr->szName );
-
-	pRec = GetDBManager()->CreateRecordset();
-
-	if (pRec->Execute( szQuery ) || pRec->Fetch() )
-	{
-		if (atoi(pRec->Get( "FLD_COUNT" )) >= 3)
-		{
-			fnMakeDefMessageA(&DefaultMsg, SM_NEWCHR_FAIL, 0, 3, 0, 0);
-			nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
-			szEncodeMsg[nPos] = '\0';
-			
-			SendToGate(s, szEncodeMsg);
-
-			GetDBManager()->DestroyRecordset( pRec );
-
-			return;
-		}
-
-		GetDBManager()->DestroyRecordset( pRec );
-
-		CTblStartPoint::TABLE *table = GetTblStartPoint()->Get( "4" );
-
-		pRec = GetDBManager()->CreateRecordset();
-
-		// TBL_CHARACTER 테이블 추가
-
-		sprintf(szQuery, "INSERT TBL_CHARACTER ("
-						"FLD_LOGINID, FLD_CHARNAME, FLD_JOB, FLD_GENDER, FLD_LEVEL, FLD_DIRECTION, "
-						"FLD_ATTACKMODE, FLD_CX, FLD_CY, FLD_MAPNAME, FLD_GOLD, FLD_HAIR, "
-						"FLD_DRESS_ID, FLD_WEAPON_ID, FLD_LEFTHAND_ID, FLD_RIGHTHAND_ID, FLD_HELMET_ID, "
-						"FLD_NECKLACE_ID, FLD_ARMRINGL_ID, FLD_ARMRINGR_ID, FLD_RINGL_ID, "
-						"FLD_RINGR_ID, FLD_EXP) VALUES ( "
-						"'%s', '%s', %d, %d, 1, 4, "
-						"1, %d, %d, '%s', 0, 0, "
-						"'0', '0', '0', '0', '0', "
-						"'0', '0', '0', '0', "
-						"'0', 0 )",
-						lpTCreateChr->szID, lpTCreateChr->szName, lpTCreateChr->btClass, lpTCreateChr->btGender,
-						table->posX, table->posY, table->mapName);
-		pRec->Execute( szQuery );
-
-		sprintf(szQuery, "INSERT TBL_CHARACTER_GENITEM (FLD_LOGINID, FLD_CHARNAME, FLD_ITEMINDEX) VALUES ('%s', '%s', 'G00080008000')",
-							lpTCreateChr->szID, lpTCreateChr->szName);
-		pRec->Execute( szQuery );
-		
-		GetDBManager()->DestroyRecordset( pRec );
-		
-		_TLOADHUMAN		human;
-		_TMAKEITEMRCD	makeItem;
-		memset( &human, 0, sizeof( human ) );
-		memset( &makeItem, 0, sizeof( makeItem ) );
-
-		strcpy( human.szUserID, lpTCreateChr->szID );
-		strcpy( human.szCharName, lpTCreateChr->szName );
-
-		// 평복 추가 (0: 남, 1: 여)
-		makeItem.szStdType	= 'B';
-		makeItem.nStdIndex	= lpTCreateChr->btGender ? 34 : 33;
-		makeItem.nDura		= 5000;
-		makeItem.nDuraMax	= 5000;
-		MakeNewItem( NULL, &human, &makeItem, 0 );
-
-		// 목검 추가
-		makeItem.szStdType	= 'A';
-		makeItem.nStdIndex	= 7;
-		makeItem.nDura		= 4000;
-		makeItem.nDuraMax	= 4000;
-		MakeNewItem( NULL, &human, &makeItem, 0 );
-		
-		fnMakeDefMessageA(&DefaultMsg, SM_NEWCHR_SUCCESS, 0, 0, 0, 0);
-		nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
-		szEncodeMsg[nPos] = '\0';
-		
-		SendToGate(s, szEncodeMsg);
-
-		return;
-	}
-
-	fnMakeDefMessageA(&DefaultMsg, SM_NEWCHR_FAIL, 0, 4, 0, 0);
-	nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
-	szEncodeMsg[nPos] = '\0';
-	
-	SendToGate(s, szEncodeMsg);
-
-	GetDBManager()->DestroyRecordset( pRec );
-}
-
-void CGateInfo::GetSelectCharacter(SOCKET s, char *pszPacket)
-{
-	char				szDecodeMsg[128];
-	char				szServerIP[32];
-	char				szEncodeMsg[32];
-	char				szEncodeData[64];
-	char				szEncodePacket[256];
-	_TDEFAULTMESSAGE	DefaultMsg;
-	
-	// ORZ: Load Balancing, 접속수가 가장 적은 게이트 서버 IP 선택
-	GAMESERVERINFO *pBestServer = NULL;
-	GAMESERVERINFO *pTemp;
-
-//	EnterCriticalSection( &g_xGameServerList.m_cs );
-	for ( PLISTNODE pNode = g_xGameServerList.GetHead();pNode; pNode = g_xGameServerList.GetNext( pNode ) )
-	{
-		pTemp = g_xGameServerList.GetData( pNode );
-		
-		if ( !pBestServer || pTemp->connCnt < pBestServer->connCnt )
-		{
-			pBestServer = pTemp;
-			continue;
-		}
-	}
-
-	pBestServer->connCnt++;
-//	LeaveCriticalSection( &g_xGameServerList.m_cs );
-
-	strcpy( szServerIP, pBestServer->ip );
-	// ORZ: from here
-
-	int nPos = fnDecode6BitBufA(pszPacket, szDecodeMsg, sizeof(szDecodeMsg));
-	szDecodeMsg[nPos] = '\0';
-
-	char *pszDevide = (char *)memchr(szDecodeMsg, '/', nPos);
-	
-	if (pszDevide)
-	{
-		*pszDevide++ = '\0';
-
-		// 서버 선택이 가능하도록 수정
-		_TLOADHUMAN		tLoadHuman;
-		CServerInfo*	pServerInfo;
-
-		memcpy(tLoadHuman.szUserID, szDecodeMsg, memlen(szDecodeMsg));
-		memcpy(tLoadHuman.szCharName, pszDevide, memlen(pszDevide));
-		ZeroMemory(tLoadHuman.szUserAddr, sizeof(tLoadHuman.szUserAddr));
-		tLoadHuman.nCertification = 0;
-
-		PLISTNODE pListNode = g_xServerList.GetHead();
-
-		if (pListNode)
-			pServerInfo = g_xServerList.GetData(pListNode);
-
-		GetLoadHumanRcd(pServerInfo, &tLoadHuman, 0);
-
-		fnMakeDefMessageA(&DefaultMsg, SM_STARTPLAY, 0, 0, 0, 0);
-		nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
-		int nPos2 = fnEncode6BitBufA((unsigned char *)szServerIP, szEncodeData, memlen(szServerIP) -1, sizeof(szEncodeData));
-		
-		memmove(szEncodePacket, szEncodeMsg, nPos);
-		memmove(&szEncodePacket[nPos], szEncodeData, nPos2);
-		szEncodePacket[nPos + nPos2] = '\0';
-		
-		// ORZ: 전체 리스트에 추가한다.
-		// 같은 아이디가 이미 존재하거나 메모리 부족등의 이유로 실패할 수 있다.
-//		if ( GetGlobalUserList()->Insert( tLoadHuman.szCharName, szServerIP ) )
-			SendToGate(s, szEncodePacket);
-//		else
-//		{
-//			fnMakeDefMessageA(&DefaultMsg, SM_STARTFAIL, 0, 0, 0, 0);
-//			nPos = fnEncodeMessageA(&DefaultMsg, szEncodeMsg, sizeof(szEncodeMsg));
-//			szEncodeMsg[nPos] = '\0';
-			
-//			SendToGate(pGateInfo->sock, s, szEncodeMsg);
-//		}
-	}
-}
-

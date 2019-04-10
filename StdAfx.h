@@ -12,22 +12,18 @@
 
 #define UNICODE
 #define _UNICODE
+//#define WIN32_LEAN_AND_MEAN		// Exclude rarely-used stuff from Windows headers
 
+#pragma warning( disable : 4146 )
 
 #include <winsock2.h>
 #include <windows.h>
 #include <tchar.h>
-#ifdef _DEBUG
 #include <crtdbg.h>
-#endif
-
-// ORZ:
-#pragma warning( disable : 4146 )
-#pragma warning(disable:4786)
-
 #include <commctrl.h>
 #include <time.h>
 #include <process.h>
+
 
 #include "resource.h"
 
@@ -35,26 +31,27 @@
 #include "..\Def\ServerSockHandler.h"
 #include "..\Def\Misc.h"
 #include "..\Def\Protocol.h"
-#include "..\Def\TableColumn.h"
 #include "..\Def\Queue.h"
 #include "..\Def\List.h"
 
-#include "DBSvr.h"
+#include "LoginSvr.h"
 
 #pragma comment (lib, "ws2_32.lib")
 #pragma comment (lib, "comctl32.lib")
 
 // **************************************************************************************
 
-#define _DB_SERVER_CLASS				_TEXT("DatabaseServerClass")
-#define _DB_SERVER_TITLE				_TEXT("Database Server - Legend of Mir II")
-#define _DB_SERVER_REGISTRY				_TEXT("Software\\LegendOfMir\\DatabaseSvr")
-#define _DB_SERVERLIST_REGISTRY			_TEXT("Software\\LegendOfMir\\DatabaseSvr\\Servers")
+#define _LOGIN_SERVER_CLASS				_TEXT("LoginServerClass")
+#define _LOGIN_SERVER_TITLE				_TEXT("Login Server - Legend of Mir II")
+#define _LOGINGATE_SERVER_TITLE			_TEXT("Legend of Mir II - Login Server")
+#define _LOGIN_SERVER_REGISTRY			_TEXT("Software\\LegendOfMir\\LoginSvr")
+#define _LOGIN_SERVERLIST_REGISTRY		_TEXT("Software\\LegendOfMir\\LoginSvr\\Servers")
 
 #define _STATUS_HEIGHT					10
-#define _NUMOFMAX_STATUS_PARTS			4
+#define _NUMOFMAX_STATUS_PARTS			7
 										    
 #define _IDM_GATECOMMSOCK_MSG			WM_USER + 1000
+#define _IDM_CLIENTSOCK_MSG				_IDM_GATECOMMSOCK_MSG + 1
 
 #define _IDW_TOOLBAR					_IDM_GATECOMMSOCK_MSG + 2
 #define _IDW_STATUSBAR					_IDM_GATECOMMSOCK_MSG + 3

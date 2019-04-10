@@ -1,137 +1,184 @@
 #include "stdafx.h"
 
-extern HWND			g_hMainWnd;
-extern HWND			g_hStatusBar;
+extern HWND								g_hStatusBar;
 
-CWHList<CGateInfo*>	g_xGateInfoList;
+extern SOCKET							g_gcSock;
 
-// **************************************************************************************
-//
-//			
-//
-// **************************************************************************************
+UINT WINAPI ThreadFuncForMsg(LPVOID lpParameter);
 
-void UpdateStatusBarGateSession(BOOL fGrow)
+extern HANDLE							g_hIOCP;
+extern BOOL								g_fTerminated;
+
+CWHList<CGateInfo*>						g_xGateList;
+CWHList<GAMESERVERINFO*>				g_xGameServerList;
+CWHList<GATESERVERINFO*>				g_xGateServerList;
+char									g_szServerList[1024];
+
+unsigned long							g_hThreadForMsg = 0;
+
+void UpdateStatusBar(BOOL fGrow)
 {
-	static long	nNumOfCurrGateSession = 0;
+	static long	nNumOfCurrSession = 0;
 
 	TCHAR	szText[20];
 
-	(fGrow ? InterlockedIncrement(&nNumOfCurrGateSession) : InterlockedDecrement(&nNumOfCurrGateSession));
+	(fGrow ? InterlockedIncrement(&nNumOfCurrSession) : InterlockedDecrement(&nNumOfCurrSession));
 	
-	wsprintf(szText, _TEXT("%d Sessions"), nNumOfCurrGateSession);
+	wsprintf(szText, _TEXT("%d Sessions"), nNumOfCurrSession);
 
-	SendMessage(g_hStatusBar, SB_SETTEXT, MAKEWORD(4, 0), (LPARAM)szText);
+	SendMessage(g_hStatusBar, SB_SETTEXT, MAKEWORD(3, 0), (LPARAM)szText);
 }
 
-BOOL InitGateCommSocket(SOCKET &s, SOCKADDR_IN* addr, UINT nMsgID, int nPort, long lEvent)
+BOOL InitServerThreadForMsg()
 {
-	if (s == INVALID_SOCKET)
+	UINT	dwThreadIDForMsg = 0;
+
+	if (!g_hThreadForMsg)
 	{
-		s = socket(AF_INET, SOCK_STREAM, 0);
+		g_hThreadForMsg	= _beginthreadex(NULL, 0, ThreadFuncForMsg,	NULL, 0, &dwThreadIDForMsg);
 
-		addr->sin_family		= AF_INET;
-		addr->sin_port			= htons(nPort);
-		addr->sin_addr.s_addr	= htonl(INADDR_ANY);
-
-		if ((bind(s, (const struct sockaddr FAR*)addr, sizeof(SOCKADDR_IN))) == SOCKET_ERROR)
-			return FALSE;
-
-		if ((listen(s, 5)) == SOCKET_ERROR)
-			return FALSE;
-
-		if ((WSAAsyncSelect(s, g_hMainWnd, nMsgID, lEvent)) == SOCKET_ERROR)
-			return FALSE;
+		if (g_hThreadForMsg)
+			return TRUE;
 	}
-	else 
-		return FALSE;
 
-	return TRUE;
+	return FALSE;
 }
 
-
-LPARAM OnGateCommSockMsg(WPARAM wParam, LPARAM lParam)
+DWORD WINAPI AcceptThread(LPVOID lpParameter)
 {
-	switch (WSAGETSELECTEVENT(lParam))
+	int					nLen = sizeof(SOCKADDR_IN);
+
+	SOCKET				Accept;
+	SOCKADDR_IN			Address;
+
+	while (TRUE)
 	{
-		case FD_ACCEPT:
+		Accept = accept(g_gcSock, (struct sockaddr FAR *)&Address, &nLen);
+
+		if (g_fTerminated)
+			return 0;
+
+		CGateInfo* pGateInfo = new CGateInfo;
+
+		if (pGateInfo)
 		{
-			CGateInfo* pGateInfo = new CGateInfo;
+			pGateInfo->sock = Accept;
 
-			if (pGateInfo)
+			CreateIoCompletionPort((HANDLE)pGateInfo->sock, g_hIOCP, (DWORD)pGateInfo, 0);
+
+			if (g_xGateList.AddNewNode(pGateInfo))
 			{
-				pGateInfo->sock = accept(wParam, (struct sockaddr FAR *)NULL, NULL);
+				int zero = 0;
+				
+				setsockopt(pGateInfo->sock, SOL_SOCKET, SO_SNDBUF, (char *)&zero, sizeof(zero) );
 
-				WSAAsyncSelect(pGateInfo->sock, g_hMainWnd, _IDM_GATECOMMSOCK_MSG, FD_READ|FD_CLOSE);
-			
-				if (g_xGateInfoList.AddNewNode(pGateInfo))
+				pGateInfo->Recv();
+
+				UpdateStatusBar(TRUE);
+
+#ifdef _DEBUG
+				TCHAR szGateIP[256];
+				wsprintf(szGateIP, _T("%d.%d.%d.%d"), Address.sin_addr.s_net, Address.sin_addr.s_host, 
+															Address.sin_addr.s_lh, Address.sin_addr.s_impno);
+
+				InsertLogMsgParam(IDS_ACCEPT_GATESERVER, szGateIP);
+#endif
+			}
+		}
+	}
+
+	return 0;
+}
+
+void CloseGate(CGateInfo* pGateInfo)
+{
+}
+
+DWORD WINAPI ServerWorkerThread(LPVOID CompletionPortID)
+{
+	DWORD					dwBytesTransferred = 0;
+	CGateInfo*				pGateInfo = NULL;
+	LPOVERLAPPED			lpOverlapped = NULL;
+	char					szTmp[DATA_BUFSIZE];
+
+	while (TRUE)
+	{
+		if ( GetQueuedCompletionStatus(
+									(HANDLE)CompletionPortID, 
+									&dwBytesTransferred, 
+									(LPDWORD)&pGateInfo, 
+									(LPOVERLAPPED *)&lpOverlapped, 
+									INFINITE) == 0 )
+		{
+			return 0;
+		}
+
+		if (g_fTerminated)
+		{
+			PLISTNODE		pListNode;
+
+			if (g_xGateList.GetCount())
+			{
+				pListNode = g_xGateList.GetHead();
+
+				while (pListNode)
 				{
-					int zero = 0;
-					
-					setsockopt(pGateInfo->sock, SOL_SOCKET, SO_SNDBUF, (char *)&zero, sizeof(zero) );
+					pGateInfo = g_xGateList.GetData(pListNode);
 
-					UpdateStatusBarGateSession(TRUE);
+					if (pGateInfo)
+						pGateInfo->Close();
+
+					delete pGateInfo;
+					pGateInfo = NULL;
+
+					pListNode = g_xGateList.RemoveNode(pListNode);
 				}
 			}
 
-			break;
+			return 0;
 		}
-		case FD_CLOSE:
+		
+		if ( dwBytesTransferred == 0 )
 		{
-			UpdateStatusBarGateSession(FALSE);
-			break;
+			pGateInfo->Close();
+			continue;
 		}
-		case FD_READ:
+
+		pGateInfo->bufLen += dwBytesTransferred;
+
+		while ( pGateInfo->HasCompletionPacket() )
 		{
-			int	 nSocket = 0;
-			char szTmp[DATA_BUFSIZE];
-			UINT nRecv = 0;
+			*(pGateInfo->ExtractPacket( szTmp ) - 1) = '\0';
 
-			CGateInfo*	pGateInfo;
-			PLISTNODE pListNode = g_xGateInfoList.GetHead();
-
-			while (pListNode)
+			switch ( szTmp[1] )
 			{
-				pGateInfo = (CGateInfo*)g_xGateInfoList.GetData(pListNode);
-
-				if (pGateInfo->sock == (SOCKET)wParam)
+				case '-':
+					pGateInfo->SendKeepAlivePacket();
 					break;
-
-				pListNode = g_xGateInfoList.GetNext(pListNode);
+				case 'A':
+					pGateInfo->ReceiveSendUser(&szTmp[2]);
+					break;
+				case 'O':
+					pGateInfo->ReceiveOpenUser(&szTmp[2]);
+					break;
+				case 'X':
+					pGateInfo->ReceiveCloseUser(&szTmp[2]);
+					break;
+				case 'S':
+					pGateInfo->ReceiveServerMsg(&szTmp[2]);
+					break;
+				case 'M':
+					pGateInfo->MakeNewUser(&szTmp[2]);
+					break;
 			}
+		}
 
-			nRecv = pGateInfo->Recv();
-
-			if ( nRecv <= 0 )
-				break;
-
-			pGateInfo->bufLen += nRecv;
-
-			while ( pGateInfo->HasCompletionPacket() )
-			{
-				memset( szTmp, 0, sizeof( szTmp ) );
-				*(pGateInfo->ExtractPacket( szTmp ) - 1) = '\0';
-
-				switch ( szTmp[1] )
-				{
-					case '-':
-						pGateInfo->SendKeepAlivePacket();
-						break;
-					case 'A':
-						pGateInfo->ReceiveSendUser(&szTmp[2]);
-						break;
-					case 'O':
-						pGateInfo->ReceiveOpenUser(&szTmp[2]);
-						break;
-					case 'X':
-						pGateInfo->ReceiveCloseUser(&szTmp[2]);
-						break;
-				}
-			}
-
-			break;
+		if ( pGateInfo->Recv() == SOCKET_ERROR && WSAGetLastError() != ERROR_IO_PENDING )
+		{
+			InsertLogMsg(_TEXT("WSARecv() failed"));
+			continue;
 		}
 	}
 
-	return 0L;
+	return 0;
 }

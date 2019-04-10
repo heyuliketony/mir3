@@ -1,9 +1,10 @@
 #include "stdafx.h"
 
-BOOL jRegSetKey(LPCTSTR pSubKeyName, LPCTSTR pValueName, DWORD dwFlags, LPBYTE pValue, DWORD nValueSize);
-BOOL jRegGetKey(LPCTSTR pSubKeyName, LPCTSTR pValueName, LPBYTE pValue);
+BOOL jRegSetKey(LPCSTR pSubKeyName, LPCSTR pValueName, DWORD dwFlags, LPBYTE pValue, DWORD nValueSize);
+BOOL jRegGetKey(LPCSTR pSubKeyName, LPCSTR pValueName, LPBYTE pValue);
 
-extern HWND		g_hMainWnd;
+extern HINSTANCE	g_hInst;
+extern HWND			g_hMainWnd;
 
 BOOL CALLBACK ConfigDlgFunc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -20,12 +21,31 @@ BOOL CALLBACK ConfigDlgFunc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM lPara
 						rcMainWnd.top + (((rcMainWnd.bottom - rcMainWnd.top) - (rcDlg.bottom - rcDlg.top)) / 2), 
 						(rcDlg.right - rcDlg.left), (rcDlg.bottom - rcDlg.top), FALSE);
 
-			TCHAR	szDatabase[256];
+			//
+			LV_COLUMN	lvc;
+			TCHAR		szText[64];
 
-			ZeroMemory(szDatabase, sizeof(szDatabase));
+			lvc.mask	= LVCF_FMT | LVCF_WIDTH | LVCF_TEXT | LVCF_SUBITEM;
+			lvc.fmt		= LVCFMT_LEFT;
+			lvc.cx		= 100;
+			lvc.pszText	= szText;
 
-			jRegGetKey(_DB_SERVER_REGISTRY, _TEXT("Device"), (LPBYTE)szDatabase);
-			SetWindowText(GetDlgItem(hWndDlg, IDC_DBMS_DEVICE), szDatabase);
+			for (int i = 0; i < 5; i++)
+			{
+				lvc.iSubItem = i;
+				LoadString((HINSTANCE)g_hInst, IDS_CONFLVS_LABEL1 + i, szText, sizeof(szText));
+				
+				ListView_InsertColumn(GetDlgItem(hWndDlg, IDC_SERVERINFO_LIST), i, &lvc);
+			}
+
+			TC_ITEM		tie;
+			
+			tie.mask	= TCIF_TEXT;
+			tie.iImage	= -1;
+			tie.pszText	= szText;
+
+			LoadString((HINSTANCE)g_hInst, IDS_TAB_LABEL1, szText, sizeof(szText));
+			ListView_InsertItem(GetDlgItem(hWndDlg, IDC_SERVERINFO_LIST), 0, &tie);
 
 			break;
 		}
@@ -34,21 +54,10 @@ BOOL CALLBACK ConfigDlgFunc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM lPara
 			switch (wParam)
 			{
 				case IDOK:
-				{
-					TCHAR	szDatabase[256];
-
-					BYTE	btInstalled = 1;
-
-					jRegSetKey(_DB_SERVER_REGISTRY, _TEXT("Installed"), REG_BINARY, (LPBYTE)&btInstalled, sizeof(BYTE));
-
-					GetWindowText(GetDlgItem(hWndDlg, IDC_DBMS_DEVICE), szDatabase, sizeof(szDatabase));
-					jRegSetKey(_DB_SERVER_REGISTRY, _TEXT("Device"), REG_SZ, (LPBYTE)szDatabase, sizeof(szDatabase)/sizeof(TCHAR));
-				}
+//					return EndDialog(hWndDlg, IDOK);
 				case IDCANCEL:
 					return EndDialog(hWndDlg, IDCANCEL);
 			}
-
-			break;
 		}
 	}
 

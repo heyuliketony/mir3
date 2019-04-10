@@ -1,5 +1,5 @@
 // stdafx.cpp : source file that includes just the standard includes
-//	DBSvr.pch will be the pre-compiled header
+//	LoginSvr.pch will be the pre-compiled header
 //	stdafx.obj will contain the pre-compiled type information
 
 #include "stdafx.h"
