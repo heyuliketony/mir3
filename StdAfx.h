@@ -10,51 +10,55 @@
 #pragma once
 #endif // _MSC_VER > 1000
 
+//#define WIN32_LEAN_AND_MEAN		// Exclude rarely-used stuff from Windows headers
 #define UNICODE
 #define _UNICODE
-//#define WIN32_LEAN_AND_MEAN		// Exclude rarely-used stuff from Windows headers
-
-#pragma warning( disable : 4146 )
 
 #include <winsock2.h>
 #include <windows.h>
 #include <tchar.h>
+#ifdef _DEBUG
 #include <crtdbg.h>
+#endif
 #include <commctrl.h>
 #include <time.h>
 #include <process.h>
-
-
 #include "resource.h"
 
 #include "..\Def\EnDecode.h"
 #include "..\Def\ServerSockHandler.h"
-#include "..\Def\Misc.h"
-#include "..\Def\Protocol.h"
 #include "..\Def\Queue.h"
-#include "..\Def\List.h"
+#include "..\Def\Misc.h"
 
-#include "LoginSvr.h"
+#include "LoginGate.h"
+
+#include "..\Def\List.h"
 
 #pragma comment (lib, "ws2_32.lib")
 #pragma comment (lib, "comctl32.lib")
 
 // **************************************************************************************
 
-#define _LOGIN_SERVER_CLASS				_TEXT("LoginServerClass")
-#define _LOGIN_SERVER_TITLE				_TEXT("Login Server - Legend of Mir II")
-#define _LOGINGATE_SERVER_TITLE			_TEXT("Legend of Mir II - Login Server")
-#define _LOGIN_SERVER_REGISTRY			_TEXT("Software\\LegendOfMir\\LoginSvr")
-#define _LOGIN_SERVERLIST_REGISTRY		_TEXT("Software\\LegendOfMir\\LoginSvr\\Servers")
+#define _BMP_CX						16
+#define _BMP_CY						16
 
-#define _STATUS_HEIGHT					10
-#define _NUMOFMAX_STATUS_PARTS			7
-										    
-#define _IDM_GATECOMMSOCK_MSG			WM_USER + 1000
-#define _IDM_CLIENTSOCK_MSG				_IDM_GATECOMMSOCK_MSG + 1
+#define _STATUS_HEIGHT				10
+#define _NUMOFMAX_STATUS_PARTS		5
 
-#define _IDW_TOOLBAR					_IDM_GATECOMMSOCK_MSG + 2
-#define _IDW_STATUSBAR					_IDM_GATECOMMSOCK_MSG + 3
+#define _LOGINGATE_SERVER_CLASS		_TEXT("LoginGateServerClass")
+#define _LOGINGATE_SERVER_TITLE		_TEXT("Legend of Mir II - Login Gate Server")
+#define _LOGINGATE_SERVER_REGISTRY	_TEXT("Software\\LegendOfMir\\LoginGate")
+
+#define _IDM_SERVERSOCK_MSG			WM_USER + 1000
+#define _IDM_CLIENTSOCK_MSG			_IDM_SERVERSOCK_MSG + 1
+
+#define _IDW_TOOLBAR				_IDM_SERVERSOCK_MSG + 2
+#define _IDW_STATUSBAR				_IDM_SERVERSOCK_MSG + 3
+
+#define _ID_TIMER_KEEPALIVE			_IDM_SERVERSOCK_MSG + 4
+#define _ID_TIMER_CONNECTSERVER		_IDM_SERVERSOCK_MSG + 5
+
+extern BOOL g_fTerminated;
 
 //{{AFX_INSERT_LOCATION}}
 // Microsoft Visual C++ will insert additional declarations immediately before the previous line.

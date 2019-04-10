@@ -1,78 +1,137 @@
 #include "stdafx.h"
 
-extern HWND						g_hStatusBar;
-extern CWHList<CGateInfo*>		g_xGateList;
+extern HWND								g_hStatusBar;
 
-UINT WINAPI ThreadFuncForMsg(LPVOID lpParameter)
+extern SOCKET							g_csock;
+
+extern CWHQueue							g_xMsgQueue;
+extern CWHList<CSessionInfo*>			g_xSessionList;
+
+DWORD WINAPI ThreadFuncForMsg(LPVOID lpParameter)
 {
-	_TDEFAULTMESSAGE	DefaultMsg;
-	char				*pszBegin, *pszEnd;
-	int					nCount;
-	PLISTNODE			pListNode;
-	CGateInfo*			pGateInfo;
+	char			szData[DATA_BUFSIZE];
+	char			szRemainData[DATA_BUFSIZE];
+	char			*pszData;
+	char			*pszFirst, *pszEnd;
+	int				nCount = 0, nDataPos = 0, nRemainDataLen = 0, nRemain = 0;
+	int				nLoop;
+	int				nSocket;
+	
+	FILETIME		ftKernelTimeStart, ftKernelTimeEnd;
+	FILETIME		ftUserTimeStart, ftUserTimeEnd;
+	FILETIME		ftDummy, ftTotalTimeElapsed;
+	__int64			qwKernelTimeElapsed, qwUserTimeElapsed, qwTotalTimeElapsed;
+	TCHAR			wszThreadTime[32];
+
+	WSABUF			Buf;
+	DWORD			dwSendBytes = 0;
 
 	while (TRUE)
 	{
-		if (g_xGateList.GetCount())
+		GetThreadTimes(GetCurrentThread(), &ftDummy, &ftDummy, &ftKernelTimeStart, &ftUserTimeStart);
+
+		if (g_fTerminated)
+			return 0;
+
+		nCount		= g_xMsgQueue.GetCount();
+		nDataPos	= 0;
+		pszFirst	= NULL;
+
+		if (nCount)
 		{
-			pListNode = g_xGateList.GetHead();
-
-			while (pListNode)
+			if (nRemainDataLen)
 			{
-				pGateInfo = g_xGateList.GetData(pListNode);
+				memmove(szData, szRemainData, nRemainDataLen);
+				nDataPos = nRemainDataLen;
+			}
 
-				if (pGateInfo)
+			for (nLoop = 0; nLoop < nCount; nLoop++)
+			{
+				pszData = (char *)g_xMsgQueue.PopQ();
+
+				if (!pszData) continue;
+
+				if (pszFirst)
 				{
-					nCount = pGateInfo->g_SendToGateQ.GetCount();
+					nRemain = memlen(pszFirst);
 
-					if (nCount)
+					if (nRemain)
 					{
-						for (int nLoop = 0; nLoop < nCount; nLoop++)
+						memmove(szData, pszFirst, nRemain);
+						nDataPos = 0;
+					}
+				}
+				else
+					nDataPos = 0;
+
+				memmove((szData + nDataPos), pszData, memlen(pszData));
+
+				pszEnd = &szData[0];
+
+				while (TRUE)
+				{
+					if ((pszFirst = (char *)memchr(pszEnd, '%', memlen(pszEnd))) && (pszEnd = (char *)memchr(pszFirst, '$', memlen(pszFirst))))
+					{
+						*pszEnd = '\0';
+
+						if (*(pszFirst + 1) == '+')
 						{
-							_LPTSENDBUFF pSendBuff = (_LPTSENDBUFF)pGateInfo->g_SendToGateQ.PopQ();
-
-							if (pSendBuff)
+							if (*(pszFirst + 2) == '-')
+								InsertLogMsg(_TEXT("Kick User."));
+							else
+								SendMessage(g_hStatusBar, SB_SETTEXT, MAKEWORD(2, 0), (LPARAM)_TEXT("Activation"));	// Received keep alive check code from login server 
+						}
+						else
+						{
+							if (pszEnd = strchr(pszFirst, '/'))
 							{
-								int nLen = memlen(pSendBuff->szData);
+								pszEnd++;
 
-								if ((pszBegin = (char *)memchr(pSendBuff->szData, '#', nLen)) &&(pszEnd = (char *)memchr(pSendBuff->szData, '!', nLen)))
+								if (nSocket = AnsiStrToVal(pszFirst + 1))
 								{
-									*pszEnd = '\0';
+									Buf.len	= memlen(pszEnd) - 1;
+									Buf.buf	= pszEnd;
 
-									fnDecodeMessageA(&DefaultMsg, (pszBegin + 2));	// 2 = "#?" ? = Check Code 
-
-									switch (DefaultMsg.wIdent)
-									{
-										case CM_PROTOCOL:
-											break;
-										case CM_IDPASSWORD:
-											pGateInfo->ProcLogin(pSendBuff->sock, pszBegin + DEFBLOCKSIZE + 2);
-											break;
-										case CM_SELECTSERVER:
-											pGateInfo->ProcSelectServer(pSendBuff->sock, DefaultMsg.wParam);
-											break;
-										case CM_ADDNEWUSER:
-											pGateInfo->ProcAddUser(pSendBuff->sock, pszBegin + DEFBLOCKSIZE + 2);
-											break;
-										case CM_UPDATEUSER:
-											break;
-										case CM_CHANGEPASSWORD:
-											break;
-									}
+									WSASend((SOCKET)nSocket, &Buf, 1, &dwSendBytes, 0, NULL, NULL);
 								}
-
-								delete pSendBuff;
-								pSendBuff = NULL;
 							}
 						}
 					}
+					else
+						break;
+				} // while loop
+
+				delete [] pszData;
+			} // for loop
+
+			if (pszFirst)
+			{
+				nRemain = memlen(pszFirst);
+
+				if (nRemain)
+				{
+					memmove(szRemainData, pszFirst, nRemain);
+					nRemainDataLen = nRemain;
 				}
-
-				pListNode = g_xGateList.GetNext(pListNode);
+				else
+					nRemainDataLen = 0;
 			}
-		}
+		} // if (nCount)
 
-		SleepEx(1, TRUE);	
+		GetThreadTimes(GetCurrentThread(), &ftDummy, &ftDummy, &ftKernelTimeEnd, &ftUserTimeEnd);
+
+		qwKernelTimeElapsed = FileTimeToQuadWord(&ftKernelTimeEnd) - FileTimeToQuadWord(&ftKernelTimeStart);
+		qwUserTimeElapsed	= FileTimeToQuadWord(&ftUserTimeEnd) - FileTimeToQuadWord(&ftUserTimeStart);
+		
+		qwTotalTimeElapsed = qwKernelTimeElapsed + qwUserTimeElapsed;
+
+		QuadTimeToFileTime(qwTotalTimeElapsed, &ftTotalTimeElapsed);
+
+		wsprintf(wszThreadTime, _TEXT("%u%u ns"), ftTotalTimeElapsed.dwHighDateTime, ftTotalTimeElapsed.dwLowDateTime);
+		
+		SendMessage(g_hStatusBar, SB_SETTEXT, MAKEWORD(4, 0), (LPARAM)wszThreadTime);
+
+		SleepEx(1, TRUE);
 	}
 
 	return 0;

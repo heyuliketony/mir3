@@ -1,10 +1,9 @@
 #include "stdafx.h"
 
-BOOL jRegSetKey(LPCSTR pSubKeyName, LPCSTR pValueName, DWORD dwFlags, LPBYTE pValue, DWORD nValueSize);
-BOOL jRegGetKey(LPCSTR pSubKeyName, LPCSTR pValueName, LPBYTE pValue);
+BOOL jRegSetKey(LPCTSTR pSubKeyName, LPCTSTR pValueName, DWORD dwFlags, LPBYTE pValue, DWORD nValueSize);
+BOOL jRegGetKey(LPCTSTR pSubKeyName, LPCTSTR pValueName, LPBYTE pValue);
 
-extern HINSTANCE	g_hInst;
-extern HWND			g_hMainWnd;
+extern HWND		g_hMainWnd;
 
 BOOL CALLBACK ConfigDlgFunc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -21,31 +20,23 @@ BOOL CALLBACK ConfigDlgFunc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM lPara
 						rcMainWnd.top + (((rcMainWnd.bottom - rcMainWnd.top) - (rcDlg.bottom - rcDlg.top)) / 2), 
 						(rcDlg.right - rcDlg.left), (rcDlg.bottom - rcDlg.top), FALSE);
 
-			//
-			LV_COLUMN	lvc;
-			TCHAR		szText[64];
+			SendMessage(GetDlgItem(hWndDlg, IDC_LOGINSVR_PORT), EM_LIMITTEXT, (WPARAM)5, (LPARAM)0L);
+			SendMessage(GetDlgItem(hWndDlg, IDC_LOCALPORT), EM_LIMITTEXT, (WPARAM)5, (LPARAM)0L);
 
-			lvc.mask	= LVCF_FMT | LVCF_WIDTH | LVCF_TEXT | LVCF_SUBITEM;
-			lvc.fmt		= LVCFMT_LEFT;
-			lvc.cx		= 100;
-			lvc.pszText	= szText;
+			DWORD	dwIP = 0;
+			TCHAR	szPort[24];
+			int		nPort = 0;
 
-			for (int i = 0; i < 5; i++)
-			{
-				lvc.iSubItem = i;
-				LoadString((HINSTANCE)g_hInst, IDS_CONFLVS_LABEL1 + i, szText, sizeof(szText));
-				
-				ListView_InsertColumn(GetDlgItem(hWndDlg, IDC_SERVERINFO_LIST), i, &lvc);
-			}
+			jRegGetKey(_LOGINGATE_SERVER_REGISTRY, _TEXT("RemoteIP"), (LPBYTE)&dwIP);
+			SendMessage(GetDlgItem(hWndDlg, IDC_LOGINSVR_IP), IPM_SETADDRESS, (WPARAM)0, (LPARAM)(DWORD)dwIP);
 
-			TC_ITEM		tie;
+			jRegGetKey(_LOGINGATE_SERVER_REGISTRY, _TEXT("RemotePort"), (LPBYTE)&nPort);
+			_itow(nPort, szPort, 10);
+			SetWindowText(GetDlgItem(hWndDlg, IDC_LOGINSVR_PORT), szPort);
 			
-			tie.mask	= TCIF_TEXT;
-			tie.iImage	= -1;
-			tie.pszText	= szText;
-
-			LoadString((HINSTANCE)g_hInst, IDS_TAB_LABEL1, szText, sizeof(szText));
-			ListView_InsertItem(GetDlgItem(hWndDlg, IDC_SERVERINFO_LIST), 0, &tie);
+			jRegGetKey(_LOGINGATE_SERVER_REGISTRY, _TEXT("LocalPort"), (LPBYTE)&nPort);
+			_itow(nPort, szPort, 10);
+			SetWindowText(GetDlgItem(hWndDlg, IDC_LOCALPORT), szPort);
 
 			break;
 		}
@@ -54,7 +45,26 @@ BOOL CALLBACK ConfigDlgFunc(HWND hWndDlg, UINT uMsg, WPARAM wParam, LPARAM lPara
 			switch (wParam)
 			{
 				case IDOK:
-//					return EndDialog(hWndDlg, IDOK);
+				{
+					DWORD	dwIP = 0;
+					TCHAR	szPort[24];
+					int		nRemotePort = 0, nLocalPort = 0;
+					BYTE	btInstalled = 1;
+
+					jRegSetKey(_LOGINGATE_SERVER_REGISTRY, _TEXT("Installed"), REG_BINARY, (LPBYTE)&btInstalled, sizeof(BYTE));
+
+					SendMessage(GetDlgItem(hWndDlg, IDC_LOGINSVR_IP), IPM_GETADDRESS, (WPARAM)0, (LPARAM)(LPDWORD)&dwIP);
+					
+					jRegSetKey(_LOGINGATE_SERVER_REGISTRY, _TEXT("RemoteIP"), REG_DWORD, (LPBYTE)&dwIP, sizeof(DWORD));
+
+					GetWindowText(GetDlgItem(hWndDlg, IDC_LOGINSVR_PORT), szPort, sizeof(szPort));
+					nRemotePort = _wtoi(szPort);
+					GetWindowText(GetDlgItem(hWndDlg, IDC_LOCALPORT), szPort, sizeof(szPort));
+					nLocalPort = _wtoi(szPort);
+
+					jRegSetKey(_LOGINGATE_SERVER_REGISTRY, _TEXT("RemotePort"), REG_DWORD, (LPBYTE)&nRemotePort, sizeof(DWORD));
+					jRegSetKey(_LOGINGATE_SERVER_REGISTRY, _TEXT("LocalPort"), REG_DWORD, (LPBYTE)&nLocalPort, sizeof(DWORD));
+				}
 				case IDCANCEL:
 					return EndDialog(hWndDlg, IDCANCEL);
 			}

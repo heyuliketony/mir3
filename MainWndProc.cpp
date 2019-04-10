@@ -1,141 +1,36 @@
 #include "stdafx.h"
-#include <stdio.h>
-#include "../def/dbmgr.h"
+
+LPARAM OnServerSockMsg(WPARAM wParam, LPARAM lParam);
+LPARAM OnClientSockMsg(WPARAM wParam, LPARAM lParam);
+
+BOOL	jRegSetKey(LPCTSTR pSubKeyName, LPCTSTR pValueName, DWORD dwFlags, LPBYTE pValue, DWORD nValueSize);
+BOOL	jRegGetKey(LPCTSTR pSubKeyName, LPCTSTR pValueName, LPBYTE pValue);
+
+BOOL CALLBACK ConfigDlgFunc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam);
+
+VOID WINAPI OnTimerProc(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime);
+
+extern HINSTANCE				g_hInst;
+
+extern HWND						g_hMainWnd;
+extern HWND						g_hLogMsgWnd;
+extern HWND						g_hToolBar;
+extern HWND						g_hStatusBar;
+
+extern HANDLE					g_hMsgThread;
+
+extern HANDLE					g_hIOCP;
+extern HANDLE					g_hAcceptThread;
+
+SOCKET			g_ssock = INVALID_SOCKET;
+SOCKADDR_IN		g_saddr;
+
+SOCKET			g_csock = INVALID_SOCKET;
+SOCKADDR_IN		g_caddr;
+
+BOOL			g_fTerminated = FALSE;
 
 
-BOOL			jRegSetKey(LPCSTR pSubKeyName, LPCSTR pValueName, DWORD dwFlags, LPBYTE pValue, DWORD nValueSize);
-BOOL			jRegGetKey(LPCSTR pSubKeyName, LPCSTR pValueName, LPBYTE pValue);
-
-BOOL CALLBACK	ConfigDlgFunc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam);
-BOOL CALLBACK	ServerListProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam);
-
-LPARAM			OnGateCommSockMsg(WPARAM wParam, LPARAM lParam);
-
-BOOL			InitServerThreadForMsg();
-
-
-extern CWHList< GAMESERVERINFO * >	g_xGameServerList;
-extern CWHList< GATESERVERINFO * >	g_xGateServerList;
-extern char							g_szServerList[1024];
-
-extern HINSTANCE		g_hInst;
-
-extern HWND				g_hMainWnd;
-extern HWND				g_hLogMsgWnd;
-extern HWND				g_hToolBar;
-extern HWND				g_hStatusBar;
-
-extern unsigned long	g_hThreadForMsg;
-
-SOCKET					g_gcSock = INVALID_SOCKET;
-SOCKADDR_IN				g_gcAddr;
-
-BOOL					g_fTerminated = FALSE;
-
-void SwitchMenuItem(BOOL fFlag)
-{
-	HMENU hMainMenu = GetMenu(g_hMainWnd);
-	HMENU hMenu = GetSubMenu(hMainMenu, 0);
-
-	if (fFlag)
-	{
-		EnableMenuItem(hMenu, IDM_STARTSERVICE, MF_GRAYED|MF_BYCOMMAND);
-		EnableMenuItem(hMenu, IDM_STOPSERVICE, MF_ENABLED|MF_BYCOMMAND);
-
-		SendMessage(g_hToolBar, TB_SETSTATE, (WPARAM)IDM_STARTSERVICE, (LPARAM)MAKELONG(TBSTATE_INDETERMINATE, 0));
-		SendMessage(g_hToolBar, TB_SETSTATE, (WPARAM)IDM_STOPSERVICE, (LPARAM)MAKELONG(TBSTATE_ENABLED, 0));
-
-		InsertLogMsg(IDS_STARTSERVICE);
-	}
-	else
-	{
-		EnableMenuItem(hMenu, IDM_STARTSERVICE, MF_ENABLED|MF_BYCOMMAND);
-		EnableMenuItem(hMenu, IDM_STOPSERVICE, MF_GRAYED|MF_BYCOMMAND);
-
-		SendMessage(g_hToolBar, TB_SETSTATE, (WPARAM)IDM_STARTSERVICE, (LPARAM)MAKELONG(TBSTATE_ENABLED, 0));
-		SendMessage(g_hToolBar, TB_SETSTATE, (WPARAM)IDM_STOPSERVICE, (LPARAM)MAKELONG(TBSTATE_INDETERMINATE, 0));
-
-		InsertLogMsg(IDS_STOPSERVICE);
-	}
-}
-
-void CreateConfigProperties()
-{
-	TCHAR			szText[64];
-
-	PROPSHEETPAGE	psp[1];
-	PROPSHEETHEADER	psh;
-
-	LoadString((HINSTANCE)g_hInst, IDS_TAB_LABEL1, szText, sizeof(szText));
-
-	psp[0].dwSize		= sizeof(PROPSHEETPAGE);
-	psp[0].dwFlags		= 0; //PSP_USETITLE;
-	psp[0].hInstance	= g_hInst;
-	psp[0].pszTemplate	= MAKEINTRESOURCE(IDD_CONFIGDLG_SERVERLIST);
-	psp[0].pszIcon		= NULL;
-	psp[0].pfnDlgProc	= ServerListProc;
-	psp[0].pszTitle		= szText;
-	psp[0].lParam		= 0;
-
-	psh.dwSize		= sizeof(PROPSHEETHEADER);
-	psh.dwFlags		= PSH_PROPSHEETPAGE | PSH_NOAPPLYNOW;
-	psh.hwndParent	= g_hMainWnd;
-	psh.hInstance	= g_hInst;
-	psh.pszIcon		= NULL;
-	psh.pszCaption	= (LPTSTR)_T("Configuration");
-	psh.nPages		= sizeof(psp) / sizeof(PROPSHEETPAGE);
-	psh.ppsp		= (LPCPROPSHEETPAGE)&psp;
-
-	PropertySheet(&psh);
-}
-
-UINT WINAPI LoadAccountRecords(LPVOID lpParameter)
-{
-	InsertLogMsg(IDS_LOADACCOUNTRECORDS);
-
-	CRecordset *pRec = GetDBManager()->CreateRecordset();
-	pRec->Execute( "UPDATE TBL_ACCOUNT SET FLD_CERTIFICATION=0 WHERE FLD_CERTIFICATION >= 30" );
-	GetDBManager()->DestroyRecordset( pRec );
-	// ----------------------------------------------------------------------------------------
-
-	GAMESERVERINFO *pServerInfo;
-
-	pRec = GetDBManager()->CreateRecordset();
-	if ( pRec->Execute( "SELECT * FROM TBL_SERVERINFO" ) )
-	{
-		while ( pRec->Fetch() )
-		{			
-			pServerInfo = new GAMESERVERINFO;
-			if ( !pServerInfo )
-				break;
-
-			pServerInfo->index = atoi( pRec->Get( "FLD_SERVERIDX" ) );
-			strcpy( pServerInfo->name, pRec->Get( "FLD_SERVERNAME" ) );
-			strcpy( pServerInfo->ip,   pRec->Get( "FLD_SERVERIP" ) );
-			pServerInfo->connCnt = 0;
-
-			g_xGameServerList.AddNewNode( pServerInfo );
-		}
-	}
-	GetDBManager()->DestroyRecordset( pRec );
-
-	char szTmp[64];
-	for ( PLISTNODE pNode = g_xGameServerList.GetHead(); pNode; pNode = g_xGameServerList.GetNext( pNode ) )
-	{
-		pServerInfo = g_xGameServerList.GetData( pNode );
-		
-		sprintf( szTmp, "%d,%s,", pServerInfo->index, pServerInfo->name );
-		strcat( g_szServerList, szTmp );
-	}
-	// ----------------------------------------------------------------------------------------
-
-	InitServerThreadForMsg();
-
-	if (InitServerSocket(g_gcSock, &g_gcAddr, _IDM_GATECOMMSOCK_MSG, 5500, 1))
-		SwitchMenuItem(TRUE);
-
-	return 0L;
-}
 
 void SetFontColor()
 {
@@ -186,23 +81,79 @@ void OnCommand(WPARAM wParam, LPARAM lParam)
 	{
 		case IDM_STARTSERVICE:
 		{
+			DWORD	dwIP = 0;
+			int		nPort = 0;
+
 			g_fTerminated = FALSE;
-			
-			UINT			dwThreadIDForMsg = 0;
-			unsigned long	hThreadForMsg = 0;
-			
-			hThreadForMsg = _beginthreadex(NULL, 0, LoadAccountRecords, NULL, 0, &dwThreadIDForMsg);
-			
+		
+			if (!jRegGetKey(_LOGINGATE_SERVER_REGISTRY, _TEXT("LocalPort"), (LPBYTE)&nPort))
+				nPort = 7000;
+
+			InitServerSocket(g_ssock, &g_saddr, _IDM_SERVERSOCK_MSG, nPort, FD_ACCEPT);
+
+			jRegGetKey(_LOGINGATE_SERVER_REGISTRY, _TEXT("RemoteIP"), (LPBYTE)&dwIP);
+
+			if (!jRegGetKey(_LOGINGATE_SERVER_REGISTRY, _TEXT("RemotePort"), (LPBYTE)&nPort))
+				nPort = 5500;
+
+			ConnectToServer(g_csock, &g_caddr, _IDM_CLIENTSOCK_MSG, NULL, dwIP, nPort, FD_CONNECT|FD_READ|FD_CLOSE);
+
+			HMENU hMainMenu = GetMenu(g_hMainWnd);
+			HMENU hMenu = GetSubMenu(hMainMenu, 0);
+
+			EnableMenuItem(hMenu, IDM_STARTSERVICE, MF_GRAYED|MF_BYCOMMAND);
+			EnableMenuItem(hMenu, IDM_STOPSERVICE, MF_ENABLED|MF_BYCOMMAND);
+
+			SendMessage(g_hToolBar, TB_SETSTATE, (WPARAM)IDM_STARTSERVICE, (LPARAM)MAKELONG(TBSTATE_INDETERMINATE, 0));
+			SendMessage(g_hToolBar, TB_SETSTATE, (WPARAM)IDM_STOPSERVICE, (LPARAM)MAKELONG(TBSTATE_ENABLED, 0));
+
+			InsertLogMsg(IDS_STARTSERVICE);
+
+			SendMessage(g_hStatusBar, SB_SETTEXT, MAKEWORD(0, 0), (LPARAM)_TEXT("Ready"));
+
 			return;
 		}
 		case IDM_STOPSERVICE:
 		{
-			ClearSocket(g_gcSock);
+			g_fTerminated = TRUE;
 
-			SwitchMenuItem(FALSE);
+			if (g_hAcceptThread != INVALID_HANDLE_VALUE)
+			{
+				TerminateThread(g_hAcceptThread, 0);
+				WaitForSingleObject(g_hAcceptThread, INFINITE);
+				CloseHandle(g_hAcceptThread);
+				g_hAcceptThread = INVALID_HANDLE_VALUE;
+			}
+
+			if (g_hMsgThread != INVALID_HANDLE_VALUE)
+			{
+				TerminateThread(g_hMsgThread, 0);
+				WaitForSingleObject(g_hMsgThread, INFINITE);
+				CloseHandle(g_hMsgThread);
+				g_hMsgThread = INVALID_HANDLE_VALUE;
+			}
+
+			ClearSocket(g_ssock);
+			ClearSocket(g_csock);
+
+			CloseHandle(g_hIOCP);
+
+			HMENU hMainMenu = GetMenu(g_hMainWnd);
+			HMENU hMenu = GetSubMenu(hMainMenu, 0);
+
+			EnableMenuItem(hMenu, IDM_STARTSERVICE, MF_ENABLED|MF_BYCOMMAND);
+			EnableMenuItem(hMenu, IDM_STOPSERVICE, MF_GRAYED|MF_BYCOMMAND);
+
+			SendMessage(g_hToolBar, TB_SETSTATE, (WPARAM)IDM_STARTSERVICE, (LPARAM)MAKELONG(TBSTATE_ENABLED, 0));
+			SendMessage(g_hToolBar, TB_SETSTATE, (WPARAM)IDM_STOPSERVICE, (LPARAM)MAKELONG(TBSTATE_INDETERMINATE, 0));
+
+			InsertLogMsg(IDS_STOPSERVICE);
+
+			SendMessage(g_hStatusBar, SB_SETTEXT, MAKEWORD(0, 0), (LPARAM)_TEXT("Not Ready"));
 
 			return;
 		}
+		// ORZ:
 		case IDM_FONTCOLOR:
 			SetFontColor();
 			return;
@@ -211,7 +162,8 @@ void OnCommand(WPARAM wParam, LPARAM lParam)
 			return;
 		case IDM_CONFIG:
 		{
-			CreateConfigProperties();
+			DialogBox(g_hInst, MAKEINTRESOURCE(IDD_CONFIGDLG), g_hMainWnd, (DLGPROC)ConfigDlgFunc);
+
 			return;
 		}
 	}
@@ -223,17 +175,17 @@ void OnCommand(WPARAM wParam, LPARAM lParam)
 //
 // **************************************************************************************
 
-
-
 LPARAM APIENTRY MainWndProc(HWND hWnd, UINT nMsg, WPARAM wParam, LPARAM lParam)
 {
 	switch (nMsg)
 	{
+		case _IDM_CLIENTSOCK_MSG:
+			return OnClientSockMsg(wParam, lParam);
 		case WM_COMMAND:
 			OnCommand(wParam, lParam);
 			break;
 		case WM_ERASEBKGND:
-			return 0; // ORZ: ±ôºý°Å¸®´Â °Í Á¦°Å
+			return 0; // ORZ:
 		case WM_SIZE:
 		{
 			if (g_hToolBar && g_hMainWnd && g_hStatusBar) 
@@ -271,13 +223,9 @@ LPARAM APIENTRY MainWndProc(HWND hWnd, UINT nMsg, WPARAM wParam, LPARAM lParam)
 			LoadString(g_hInst, IDS_PROGRAM_TITLE, szTitle, sizeof(szTitle));
 
 			if (MessageBox(g_hMainWnd, szMsg, szTitle, MB_ICONINFORMATION|MB_YESNO) == IDYES)
-			{			
-//				ClearServerSocket();
-//				DisconnectFromServer();
-
-				OnCommand(IDM_STOPSERVICE, 0L);
-
-				CoUninitialize();
+			{
+				if (SendMessage(g_hToolBar, TB_GETSTATE, (WPARAM)IDM_STARTSERVICE, (LPARAM)0L) == TBSTATE_INDETERMINATE)
+					OnCommand(IDM_STOPSERVICE, 0L);
 
 				WSACleanup();
 
